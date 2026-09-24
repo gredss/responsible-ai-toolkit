@@ -227,26 +227,6 @@ class PathConfig:
     AGGREGATED_RESULTS_FILE: str = "aggregated_results.csv"
     SUMMARY_REPORT_FILE: str = "summary_report.txt"
     
-    def get_data_path(self, filename: str) -> str:
-        """Get full path for data file."""
-        return os.path.join(self.BASE_DIR, self.DATA_DIR, filename)
-    
-    def get_checkpoint_path(self, model_name: str, checkpoint_name: str) -> str:
-        """Get full path for model checkpoint."""
-        return os.path.join(self.BASE_DIR, self.CHECKPOINT_DIR, model_name, checkpoint_name)
-    
-    def get_evaluation_path(self, filename: str) -> str:
-        """Get full path for evaluation results."""
-        return os.path.join(self.BASE_DIR, self.EVALUATION_DIR, filename)
-    
-    def get_statistical_path(self, filename: str) -> str:
-        """Get full path for statistical analysis."""
-        return os.path.join(self.BASE_DIR, self.STATISTICAL_DIR, filename)
-    
-    def get_report_path(self, filename: str) -> str:
-        """Get full path for reports."""
-        return os.path.join(self.BASE_DIR, self.REPORTS_DIR, filename)
-    
     def create_directories(self) -> None:
         """Create all necessary directories."""
         directories = [

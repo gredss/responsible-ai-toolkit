@@ -39,6 +39,27 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# PERTURBATION STRUCTURE CONSTANTS
+# =============================================================================
+#
+# The robustness experiment applies TWO perturbation mechanisms, each at three
+# intensity levels. The unperturbed data ('clean') is the shared baseline for
+# both mechanisms, so it lives once at the top of the structure rather than
+# under each type.
+#
+#   results['perturbation'][domain] = {
+#       'clean': {...},
+#       'semantic': {'low': {...}, 'medium': {...}, 'high': {...}},
+#       'typo':     {'low': {...}, 'medium': {...}, 'high': {...}},
+#   }
+#
+# These names drive every perturbation loop in the pipeline so there are no
+# hard-coded ['low','medium','high'] lists scattered around.
+PERTURBATION_TYPES = ['semantic', 'typo']
+PERTURBATION_LEVELS = ['low', 'medium', 'high']
+
+
 class MetricsCalculator:
     """
     Calculates performance metrics for clickbait detection.
@@ -524,35 +545,6 @@ class InDomainEvaluator:
 
         return results
 
-    def evaluate_by_domain(
-        self,
-        test_df: pd.DataFrame,
-        domains: List[str]
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Evaluate model separately for each domain.
-
-        Args:
-            test_df: Test DataFrame with 'domain' column
-            domains: List of domain names
-
-        Returns:
-            Dictionary mapping domain names to evaluation results
-        """
-        logger.info(f"Evaluating across {len(domains)} domains")
-
-        results = {}
-
-        for domain in domains:
-            domain_df = test_df[test_df['domain'] == domain].copy()
-            if len(domain_df) > 0:
-                results[domain] = self.evaluate(domain_df, domain)
-            else:
-                logger.warning(f"No samples found for domain: {domain}")
-
-        return results
-
-
 class CrossDomainEvaluator:
     """
     Handles cross-domain evaluation (5x5 matrix).
@@ -711,128 +703,6 @@ class PerturbationEvaluator:
 
         logger.info("PerturbationEvaluator initialized")
 
-    #def _calculate_perturbation_statistics(
-    #    self,
-    #    original_df: pd.DataFrame,
-    #    perturbed_df: pd.DataFrame
-    #) -> Dict[str, Any]:
-    #    """
-    #    Calculate actual perturbation change statistics.
-    #    """
-    #
-    #    original_texts = (
-    #        original_df['text'].astype(str).tolist()
-    #    )
-    #
-    #    perturbed_texts = (
-    #        perturbed_df['text'].astype(str).tolist()
-    #    )
-    #
-    #    if len(original_texts) != len(perturbed_texts):
-    #        raise ValueError(
-    #            "Original and perturbed datasets must have "
-    #            "the same number of samples."
-    #        )
-    #
-    #    changed_samples = 0
-    #    word_change_rates = []
-    #    char_change_rates = []
-    #
-    #    for original, perturbed in zip(
-    #        original_texts,
-    #        perturbed_texts
-    #    ):
-    #
-    #        if original != perturbed:
-    #            changed_samples += 1
-    #
-    #        original_words = original.split()
-    #        perturbed_words = perturbed.split()
-    #
-    #        # Position-based word changes
-    #        max_len = max(
-    #            len(original_words),
-    #            len(perturbed_words)
-    #        )
-    #
-    #        changed_words = sum(
-    #            1
-    #            for i in range(max_len)
-    #            if (
-    #                i >= len(original_words)
-    #                or i >= len(perturbed_words)
-    #                or original_words[i] != perturbed_words[i]
-    #            )
-    #        )
-    #
-    #        word_change_rate = (
-    #            changed_words / len(original_words)
-    #            if len(original_words) > 0
-    #            else 0.0
-    #        )
-    #
-    #        word_change_rates.append(word_change_rate)
-    #
-    #        # Character change rate
-    #        max_char_len = max(
-    #            len(original),
-    #            len(perturbed)
-    #        )
-    #
-    #        changed_chars = sum(
-    #            1
-    #            for i in range(max_char_len)
-    #            if (
-    #                i >= len(original)
-    #                or i >= len(perturbed)
-    #                or original[i] != perturbed[i]
-    #            )
-    #        )
-    #
-    #        char_change_rate = (
-    #            changed_chars / len(original)
-    #            if len(original) > 0
-    #            else 0.0
-    #        )
-    #
-    #        char_change_rates.append(char_change_rate)
-    #
-    #    total = len(original_texts)
-    #
-    #    return {
-    #        'total_samples': total,
-    #
-    #        'changed_samples': changed_samples,
-    #
-    #        'unchanged_samples': (
-    #            total - changed_samples
-    #        ),
-    #
-    #        'sample_change_rate': (
-    #            changed_samples / total
-    #            if total > 0
-    #            else 0.0
-    #        ),
-    #
-    #        'mean_word_change_rate': (
-    #            float(np.mean(word_change_rates))
-    #            if word_change_rates
-    #            else 0.0
-    #        ),
-    #
-    #        'median_word_change_rate': (
-    #            float(np.median(word_change_rates))
-    #            if word_change_rates
-    #            else 0.0
-    #        ),
-    #
-    #        'mean_char_change_rate': (
-    #            float(np.mean(char_change_rates))
-    #            if char_change_rates
-    #            else 0.0
-    #        )
-    #    }
-
     def evaluate_with_perturbation(
         self,
         test_df: pd.DataFrame,
@@ -860,45 +730,6 @@ class PerturbationEvaluator:
             text_column='text',
             level=perturbation_level
         )
-
-        ## ── debug: perturbation sample pairs ──────────────────────────────
-        #dbg_perturbation_samples(
-        #    level=perturbation_level,
-        #    domain=domain or "?",
-        #    originals=original_texts,
-        #    perturbed=perturbed_texts,
-        #)
-        #
-        ## ── debug: perturbation character/word change stats ──────────────
-        #import numpy as _np
-        #
-        #char_changes = [
-        #    sum(1 for a, b in zip(o, p) if a != b) / max(len(o), 1)
-        #    for o, p in zip(original_texts, perturbed_texts)
-        #]
-        #
-        #word_changes = [
-        #    len(
-        #        set(o.split()).symmetric_difference(
-        #            set(p.split())
-        #        )
-        #    ) / max(len(o.split()), 1)
-        #    for o, p in zip(original_texts, perturbed_texts)
-        #]
-        #
-        #dbg_perturbation_stats(
-        #    level=perturbation_level,
-        #    domain=domain or "?",
-        #    n_texts=len(perturbed_df),
-        #    char_change_mean=(
-        #        float(_np.mean(char_changes))
-        #        if char_changes else 0.0
-        #    ),
-        #    word_change_mean=(
-        #        float(_np.mean(word_changes))
-        #        if word_changes else 0.0
-        #    ),
-        #)
 
         # ---------------------------------------------------------------
         # Get predictions
@@ -1008,22 +839,6 @@ class PerturbationEvaluator:
         # Perturbation statistics
         # ------------------------------------------------------------
         perturbation_stats = {
-            'total_samples': len(perturbed_df),
-
-            'changed_samples': int(
-                (
-                    perturbed_df['is_same_as_original'] == False
-                ).sum()
-            ) if 'is_same_as_original' in perturbed_df.columns
-            else None,
-
-            'sample_change_rate': float(
-                (
-                    perturbed_df['is_same_as_original'] == False
-                ).mean()
-            ) if 'is_same_as_original' in perturbed_df.columns
-            else None,
-
             'mean_word_change_rate': float(
                 perturbed_df[
                     'actual_ratio_all_words'
@@ -1031,53 +846,39 @@ class PerturbationEvaluator:
             ) if 'actual_ratio_all_words' in perturbed_df.columns
             else None,
 
-            'median_word_change_rate': float(
+            'mean_similarity_score': float(
                 perturbed_df[
-                    'actual_ratio_all_words'
-                ].median()
-            ) if 'actual_ratio_all_words' in perturbed_df.columns
-            else None,
-
-            'mean_eligible_word_change_rate': float(
-                perturbed_df[
-                    'actual_ratio_eligible_words'
-                ].mean()
-            ) if 'actual_ratio_eligible_words' in perturbed_df.columns
-            else None,
-
-            'mean_word_cosine_similarity': float(
-                perturbed_df[
-                    'word_cosine_similarity_mean'
+                    'similarity_score_mean'
                 ].dropna().mean()
             ) if (
-                'word_cosine_similarity_mean'
+                'similarity_score_mean'
                 in perturbed_df.columns
                 and perturbed_df[
-                    'word_cosine_similarity_mean'
+                    'similarity_score_mean'
                 ].notna().any()
             ) else None,
 
-            'min_word_cosine_similarity': float(
+            'min_similarity_score': float(
                 perturbed_df[
-                    'word_cosine_similarity_min'
+                    'similarity_score_min'
                 ].dropna().min()
             ) if (
-                'word_cosine_similarity_min'
+                'similarity_score_min'
                 in perturbed_df.columns
                 and perturbed_df[
-                    'word_cosine_similarity_min'
+                    'similarity_score_min'
                 ].notna().any()
             ) else None,
 
-            'max_word_cosine_similarity': float(
+            'max_similarity_score': float(
                 perturbed_df[
-                    'word_cosine_similarity_max'
+                    'similarity_score_max'
                 ].dropna().max()
             ) if (
-                'word_cosine_similarity_max'
+                'similarity_score_max'
                 in perturbed_df.columns
                 and perturbed_df[
-                    'word_cosine_similarity_max'
+                    'similarity_score_max'
                 ].notna().any()
             ) else None,
         }
@@ -1296,12 +1097,74 @@ class EvaluationEngine:
                 f"{perturbation_output_dir}"
             )
 
+    # =========================================================================
+    # HELPERS FOR SUCCESS-ONLY FILTERING
+    # =========================================================================
+
+    @staticmethod
+    def _successful_ids(perturbed_df: pd.DataFrame) -> set:
+        """
+        Return the set of sample IDs that were SUCCESSFULLY perturbed in this
+        DataFrame (perturbation_success == True).
+
+        We use the 'id' column (the stable per-sample identifier from the CSV
+        schema) so intersections are by exact sample, never by row position.
+        """
+        if 'id' not in perturbed_df.columns:
+            raise ValueError(
+                "Cannot filter by successful IDs: 'id' column is missing "
+                "from the perturbed DataFrame."
+            )
+        if 'perturbation_success' not in perturbed_df.columns:
+            raise ValueError(
+                "Cannot filter by successful IDs: 'perturbation_success' "
+                "column is missing from the perturbed DataFrame."
+            )
+        successful = perturbed_df['perturbation_success'].astype(bool)
+        return set(perturbed_df.loc[successful, 'id'].tolist())
+
+    @staticmethod
+    def _mean_achieved_intensity(perturbed_df: pd.DataFrame) -> Optional[float]:
+        """
+        Mean achieved perturbation intensity over the SUCCESSFUL rows only,
+        reported in each mechanism's natural unit:
+          * semantic -> actual_ratio_all_words (word-change ratio)
+          * typo     -> char_edit_ratio        (character edit ratio)
+        Returns None if neither column is present.
+        """
+        successful = perturbed_df['perturbation_success'].astype(bool)
+        rows = perturbed_df.loc[successful]
+        if len(rows) == 0:
+            return None
+        if 'char_edit_ratio' in rows.columns and rows['char_edit_ratio'].notna().any():
+            return float(rows['char_edit_ratio'].astype(float).mean())
+        if 'actual_ratio_all_words' in rows.columns:
+            return float(rows['actual_ratio_all_words'].astype(float).mean())
+        return None
+
     def generate_all_perturbations(
         self,
         test_data: Dict[str, pd.DataFrame]
     ) -> Dict[str, Dict[str, pd.DataFrame]]:
 
         logger.info("Generating all perturbations ONCE")
+
+        # We generate TWO independent perturbation types for every domain:
+        #
+        #   'semantic' -> synonym substitution  (engine levels: low/medium/high)
+        #   'typo'     -> character typos        (engine levels: typo_low/typo_medium/typo_high)
+        #
+        # The PerturbationEngine uses distinct level names per type. For the
+        # semantic type the engine level IS the short level ('low'); for the
+        # typo type it is prefixed ('typo_low'). We STORE every result under the
+        # short level name so the downstream structure is uniform:
+        #
+        #   perturbed_test_data[domain][ptype][level] = perturbed_df
+        #
+        # where ptype in PERTURBATION_TYPES and level in PERTURBATION_LEVELS.
+        def _engine_level(ptype: str, level: str) -> str:
+            """Map (type, short level) -> the level name the engine expects."""
+            return level if ptype == 'semantic' else f"{ptype}_{level}"
 
         perturbed_test_data = {}
 
@@ -1315,64 +1178,80 @@ class EvaluationEngine:
             )
             os.makedirs(domain_output_dir, exist_ok=True)
 
-            for level in ['low', 'medium', 'high']:
-                logger.info(
-                    f"  Generating {domain} - {level}"
-                )
+            # Loop over each perturbation type, then over its three levels.
+            for ptype in PERTURBATION_TYPES:
 
-                perturbed_df = self.perturbation_engine.apply_to_dataframe(
-                    test_df.copy(),
-                    text_column='text',
-                    level=level
-                )
+                perturbed_test_data[domain][ptype] = {}
 
-                # ============================================================
-                # DEFINE FINAL PERTURBATION SUCCESS
-                # ============================================================
-
-                if (
-                    'is_same_as_original' not in perturbed_df.columns
-                    or 'perturbation_in_range' not in perturbed_df.columns
-                ):
-                    raise ValueError(
-                        "Required perturbation validation columns are missing: "
-                        "'is_same_as_original' and/or 'perturbation_in_range'."
+                for level in PERTURBATION_LEVELS:
+                    engine_level = _engine_level(ptype, level)
+                    logger.info(
+                        f"  Generating {domain} - {ptype} - {level} "
+                        f"(engine level '{engine_level}')"
                     )
 
-                perturbed_df['perturbation_success'] = (
-                    (~perturbed_df['is_same_as_original'].astype(bool))
-                    & perturbed_df['perturbation_in_range'].astype(bool)
-                )
+                    perturbed_df = self.perturbation_engine.apply_to_dataframe(
+                        test_df.copy(),
+                        text_column='text',
+                        level=engine_level
+                    )
 
-                # ============================================================
-                # DEBUG
-                # ============================================================
+                    # ====================================================
+                    # DEFINE FINAL PERTURBATION SUCCESS
+                    # ====================================================
 
-                print("\nperturbation_success:")
-                print(
-                    perturbed_df['perturbation_success']
-                    .value_counts(dropna=False)
-                )
+                    if (
+                        'is_same_as_original' not in perturbed_df.columns
+                        or 'perturbation_in_range' not in perturbed_df.columns
+                    ):
+                        raise ValueError(
+                            "Required perturbation validation columns are missing: "
+                            "'is_same_as_original' and/or 'perturbation_in_range'."
+                        )
 
-                # ============================================================
-                # STORE
-                # ============================================================
+                    perturbed_df['perturbation_success'] = (
+                        (~perturbed_df['is_same_as_original'].astype(bool))
+                        & perturbed_df['perturbation_in_range'].astype(bool)
+                    )
 
-                perturbed_test_data[domain][level] = perturbed_df
+                    # Tag each row with its perturbation type so later analysis
+                    # can separate semantic from typo rows.
+                    perturbed_df['perturbation_type'] = ptype
 
-                output_path = os.path.join(
-                    domain_output_dir,
-                    f"{level}.csv"
-                )
+                    # ====================================================
+                    # DEBUG
+                    # ====================================================
 
-                perturbed_df.to_csv(
-                    output_path,
-                    index=False
-                )
+                    print(f"\nperturbation_success ({ptype} - {level}):")
+                    print(
+                        perturbed_df['perturbation_success']
+                        .value_counts(dropna=False)
+                    )
 
-                logger.info(
-                    f"  Saved: {output_path}"
-                )
+                    # ====================================================
+                    # STORE
+                    # ====================================================
+
+                    perturbed_test_data[domain][ptype][level] = perturbed_df
+
+                    # Save to <domain>/<ptype>/<level>.csv so the two types do
+                    # not overwrite each other on disk.
+                    type_output_dir = os.path.join(domain_output_dir, ptype)
+                    os.makedirs(type_output_dir, exist_ok=True)
+
+                    output_path = os.path.join(
+                        type_output_dir,
+                        f"{level}.csv"
+                    )
+
+                    perturbed_df.to_csv(
+                        output_path,
+                        index=False
+                    )
+
+                    logger.info(
+                        f"  Saved: {output_path}"
+                    )
 
         logger.info("All perturbations generated and saved successfully")
 
@@ -1471,22 +1350,124 @@ class EvaluationEngine:
                     perturbation_engine=self.perturbation_engine,
                     perturbation_output_dir=self.perturbation_output_dir
                 )
+                # Used to score the mechanism-specific aligned clean baseline.
+                in_domain_evaluator = InDomainEvaluator(
+                    self.model_trainers[domain]
+                )
+
+                # The original, unperturbed test set for this domain. The
+                # aligned clean baselines are drawn from exactly these rows.
+                domain_test_df = test_data[domain]
+
                 clean_results = results['in_domain'][domain]
-                results['perturbation'][domain] = {
-                    'clean': clean_results
-                }
-                for level in ['low', 'medium', 'high']:
-                    perturbed_df = (
-                        perturbed_test_data[domain][level]
+
+                # PRESERVE the global (full test-set) clean baseline so legacy
+                # downstream code that reads perturbation[domain]['clean'] keeps
+                # working unchanged.
+                domain_perturbation = {'clean': clean_results}
+
+                for ptype in PERTURBATION_TYPES:
+                    domain_perturbation[ptype] = {}
+
+                    # ------------------------------------------------------
+                    # STEP 1: report success rate + achieved intensity, and
+                    # collect the successful IDs per level (for this mechanism).
+                    # ------------------------------------------------------
+                    success_ids_by_level = {}
+                    for level in PERTURBATION_LEVELS:
+                        perturbed_df = perturbed_test_data[domain][ptype][level]
+                        n_total = len(perturbed_df)
+                        success_ids = self._successful_ids(perturbed_df)
+                        success_ids_by_level[level] = success_ids
+
+                        success_rate = (
+                            len(success_ids) / n_total if n_total else 0.0
+                        )
+                        mean_intensity = self._mean_achieved_intensity(perturbed_df)
+                        logger.info(
+                            "[%s | %s | %s] success rate: %d/%d (%.2f%%) | "
+                            "mean achieved intensity: %s",
+                            domain, ptype, level,
+                            len(success_ids), n_total, success_rate * 100,
+                            f"{mean_intensity:.4f}" if mean_intensity is not None else "n/a",
+                        )
+
+                    # ------------------------------------------------------
+                    # STEP 2: intersect successful IDs across the 3 levels.
+                    # Done INDEPENDENTLY per mechanism (semantic vs typo never
+                    # mix). This is an exact-ID intersection, not truncation.
+                    # ------------------------------------------------------
+                    common_ids = (
+                        success_ids_by_level['low']
+                        & success_ids_by_level['medium']
+                        & success_ids_by_level['high']
                     )
-                    results['perturbation'][domain][level] = (
-                        evaluator.evaluate_existing_perturbation(
-                            perturbed_df=perturbed_df,
-                            clean_results=clean_results,
+                    logger.info(
+                        "[%s | %s] common successful IDs across low/medium/high: %d",
+                        domain, ptype, len(common_ids),
+                    )
+
+                    # ------------------------------------------------------
+                    # STEP 3: aligned CLEAN baseline for this mechanism =
+                    # the ORIGINAL unperturbed rows whose id is in common_ids.
+                    # ------------------------------------------------------
+                    aligned_clean_df = domain_test_df[
+                        domain_test_df['id'].isin(common_ids)
+                    ].copy()
+                    aligned_clean_results = in_domain_evaluator.evaluate(
+                        aligned_clean_df, domain
+                    )
+                    # Record how many samples survived the intersection.
+                    aligned_clean_results['common_ids_count'] = len(common_ids)
+                    domain_perturbation[ptype]['clean'] = aligned_clean_results
+
+                    # ------------------------------------------------------
+                    # SAMPLE-COUNT TRANSPARENCY (before any F1 is computed).
+                    # After the common_ids filter, every set — Aligned Clean,
+                    # Low, Medium, High — must contain exactly the same samples.
+                    # We print each count explicitly so it is easy to confirm.
+                    # ------------------------------------------------------
+                    clean_count = len(aligned_clean_df)
+                    level_counts = {
+                        level: int(
+                            perturbed_test_data[domain][ptype][level]['id']
+                            .isin(common_ids).sum()
+                        )
+                        for level in PERTURBATION_LEVELS
+                    }
+                    print(
+                        f"\n[{domain} | {ptype}] Samples surviving common_ids filter:"
+                    )
+                    print(f"    Aligned Clean : {clean_count}")
+                    print(f"    Low           : {level_counts['low']}")
+                    print(f"    Medium        : {level_counts['medium']}")
+                    print(f"    High          : {level_counts['high']}")
+                    logger.info(
+                        "[%s | %s] surviving counts -> clean=%d, low=%d, medium=%d, high=%d",
+                        domain, ptype, clean_count,
+                        level_counts['low'], level_counts['medium'], level_counts['high'],
+                    )
+
+                    # ------------------------------------------------------
+                    # STEP 4: score Low/Medium/High on ONLY common_ids, and
+                    # measure degradation against this mechanism's aligned clean.
+                    # ------------------------------------------------------
+                    for level in PERTURBATION_LEVELS:
+                        perturbed_df = perturbed_test_data[domain][ptype][level]
+                        filtered_df = perturbed_df[
+                            perturbed_df['id'].isin(common_ids)
+                        ].copy()
+
+                        level_results = evaluator.evaluate_existing_perturbation(
+                            perturbed_df=filtered_df,
+                            clean_results=aligned_clean_results,
                             perturbation_level=level,
                             domain=domain
                         )
-                    )
+                        level_results['common_ids_count'] = len(common_ids)
+                        domain_perturbation[ptype][level] = level_results
+
+                results['perturbation'][domain] = domain_perturbation
         # ============================================================
         # PHASE 5 — CROSS-DOMAIN PERTURBATION
         # ============================================================
@@ -1533,7 +1514,6 @@ class EvaluationEngine:
         }
 
         domains = list(test_data.keys())
-        perturbation_levels = ['clean', 'low', 'medium', 'high']
 
         for source_domain in domains:
             if source_domain not in self.model_trainers:
@@ -1546,117 +1526,205 @@ class EvaluationEngine:
                     continue
 
                 key = f"{source_domain}_to_{target_domain}"
+
+                # Mirror the in-domain structure: a shared 'clean' baseline,
+                # then a 'semantic' and a 'typo' branch each with low/medium/high.
                 results['cross_domain_perturbation'][key] = {}
+                for ptype in PERTURBATION_TYPES:
+                    results['cross_domain_perturbation'][key][ptype] = {}
 
                 target_df = test_data[target_domain]
 
-                # Evaluate on clean data
+                # Evaluate on clean data (shared baseline for both types)
                 y_true = target_df['label'].values
                 y_pred, y_proba = model_trainer.predict(target_df['text'].tolist())
                 clean_metrics = self.metrics_calculator.calculate_metrics(
                     y_true, y_pred, y_proba
                 )
+                clean_predictions = y_pred.tolist()
                 results['cross_domain_perturbation'][key]['clean'] = {
                     'metrics': clean_metrics,
-                    'predictions': y_pred.tolist(),
+                    'predictions': clean_predictions,
                     'probabilities': y_proba.tolist(),
                     'true_labels': y_true.tolist()
                 }
 
-                # Evaluate with perturbations
-                for level in ['low', 'medium', 'high']:
+                # Evaluate with perturbations, once per type and level.
+                for ptype in PERTURBATION_TYPES:
+                    for level in PERTURBATION_LEVELS:
 
-                    # Reuse the already-generated perturbation
-                    perturbed_df = perturbed_test_data[target_domain][level]
-                    perturbation_stats = perturbed_df.attrs.get(
-                        'perturbation_stats',
-                        {}
-                    )
-
-                    similarities = perturbed_df.attrs.get(
-                        'replacement_similarities',
-                        []
-                    )
-
-                    if similarities:
-                        similarity_statistics = {
-                            'count': len(similarities),
-                            'mean': float(np.mean(similarities)),
-                            'median': float(np.median(similarities)),
-                            'std': float(np.std(similarities)),
-                            'min': float(np.min(similarities)),
-                            'max': float(np.max(similarities))
-                        }
-                    else:
-                        similarity_statistics = {
-                            'count': 0,
-                            'mean': None,
-                            'median': None,
-                            'std': None,
-                            'min': None,
-                            'max': None
-                        }
-
-                    perturbation_statistics = {
-                        **perturbation_stats,
-                        'semantic_similarity': similarity_statistics
-                    }
-
-                    y_true = perturbed_df['label'].values
-                    y_pred, y_proba = model_trainer.predict(
-                        perturbed_df['text'].tolist()
-                    )
-                    perturbed_metrics = self.metrics_calculator.calculate_metrics(
-                        y_true, y_pred, y_proba
-                    )
-
-                    # Calculate robustness metrics
-                    robustness = self.metrics_calculator.calculate_robustness_metrics(
-                        clean_metrics,
-                        perturbed_metrics
-                    )
-
-                    if 'perturbation_success' not in perturbed_df.columns:
-                        raise ValueError(
-                            f"Missing 'perturbation_success' for "
-                            f"{target_domain} - {level}"
+                        # Reuse the already-generated perturbation
+                        perturbed_df = perturbed_test_data[target_domain][ptype][level]
+                        perturbation_stats = perturbed_df.attrs.get(
+                            'perturbation_stats',
+                            {}
                         )
 
-                    prediction_flip = self.metrics_calculator.calculate_prediction_flip(
-                        clean_predictions=(
-                            results['cross_domain_perturbation'][key]['clean']['predictions']
-                        ),
-                        perturbed_predictions=y_pred.tolist(),
-                        true_labels=y_true.tolist(),
-                        successful_perturbations=(
-                            perturbed_df['perturbation_success'].tolist()
-                            if 'perturbation_success' in perturbed_df.columns
-                            else None
+                        similarities = perturbed_df.attrs.get(
+                            'replacement_similarities',
+                            []
                         )
-                    )
 
-                    results['cross_domain_perturbation'][key][level] = {
-                        'metrics': perturbed_metrics,
-                        'robustness_metrics': robustness,
-                        'prediction_flip': prediction_flip,
-                        'perturbation_statistics':
-                            perturbation_statistics,
-                        'predictions': y_pred.tolist(),
-                        'probabilities': y_proba.tolist(),
-                        'true_labels': y_true.tolist()
-                    }
+                        if similarities:
+                            similarity_statistics = {
+                                'count': len(similarities),
+                                'mean': float(np.mean(similarities)),
+                                'median': float(np.median(similarities)),
+                                'std': float(np.std(similarities)),
+                                'min': float(np.min(similarities)),
+                                'max': float(np.max(similarities))
+                            }
+                        else:
+                            similarity_statistics = {
+                                'count': 0,
+                                'mean': None,
+                                'median': None,
+                                'std': None,
+                                'min': None,
+                                'max': None
+                            }
 
-                    logger.info(
-                        f"{source_domain} -> {target_domain} ({level}): "
-                        f"Macro-F1={perturbed_metrics['macro_f1']:.4f}"
-                    )
+                        perturbation_statistics = {
+                            **perturbation_stats,
+                            'semantic_similarity': similarity_statistics
+                        }
+
+                        y_true = perturbed_df['label'].values
+                        y_pred, y_proba = model_trainer.predict(
+                            perturbed_df['text'].tolist()
+                        )
+                        perturbed_metrics = self.metrics_calculator.calculate_metrics(
+                            y_true, y_pred, y_proba
+                        )
+
+                        # Calculate robustness metrics
+                        robustness = self.metrics_calculator.calculate_robustness_metrics(
+                            clean_metrics,
+                            perturbed_metrics
+                        )
+
+                        if 'perturbation_success' not in perturbed_df.columns:
+                            raise ValueError(
+                                f"Missing 'perturbation_success' for "
+                                f"{target_domain} - {ptype} - {level}"
+                            )
+
+                        prediction_flip = self.metrics_calculator.calculate_prediction_flip(
+                            clean_predictions=clean_predictions,
+                            perturbed_predictions=y_pred.tolist(),
+                            true_labels=y_true.tolist(),
+                            successful_perturbations=(
+                                perturbed_df['perturbation_success'].tolist()
+                                if 'perturbation_success' in perturbed_df.columns
+                                else None
+                            )
+                        )
+
+                        results['cross_domain_perturbation'][key][ptype][level] = {
+                            'metrics': perturbed_metrics,
+                            'robustness_metrics': robustness,
+                            'prediction_flip': prediction_flip,
+                            'perturbation_statistics':
+                                perturbation_statistics,
+                            'predictions': y_pred.tolist(),
+                            'probabilities': y_proba.tolist(),
+                            'true_labels': y_true.tolist()
+                        }
+
+                        logger.info(
+                            f"{source_domain} -> {target_domain} "
+                            f"({ptype} - {level}): "
+                            f"Macro-F1={perturbed_metrics['macro_f1']:.4f}"
+                        )
 
         logger.info("Cross-domain perturbation evaluation complete")
 
-        # Save results
-        self.save_results(results, filename='cross_domain_perturbation_results.json')
-
         return results
+
+    @staticmethod
+    def _build_perturbation_row(
+        evaluation_type: str,
+        source_domain: str,
+        target_domain: str,
+        perturbation_type: str,
+        perturbation_level: str,
+        level_results: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Build one aggregated CSV row for a single perturbed condition.
+
+        This is shared by both the in-domain perturbation rows and the
+        cross-domain perturbation rows so the (identical) metric/robustness/
+        flip/similarity extraction lives in one place instead of being
+        duplicated. The 'perturbation_type' column keeps semantic and typo
+        rows distinguishable in the flat CSV.
+        """
+        row = {
+            'evaluation_type': evaluation_type,
+            'source_domain': source_domain,
+            'target_domain': target_domain,
+            'perturbation_type': perturbation_type,
+            'perturbation_level': perturbation_level,
+            **level_results['metrics'],
+        }
+
+        if 'robustness_metrics' in level_results:
+            row.update(level_results['robustness_metrics'])
+
+        if 'prediction_flip' in level_results:
+            flip = level_results['prediction_flip']
+            row.update({
+                'flip_count': flip['flip_count'],
+                'flip_rate': flip['flip_rate'],
+                'flip_rate_pct': flip['flip_rate_pct'],
+                'flip_0_to_1_count': flip['flip_0_to_1_count'],
+                'flip_1_to_0_count': flip['flip_1_to_0_count'],
+                'correct_to_incorrect':
+                    flip['flips']['correct_to_incorrect'],
+                'incorrect_to_correct':
+                    flip['flips']['incorrect_to_correct'],
+                'correct_to_incorrect_rate':
+                    flip['flips']['correct_to_incorrect_rate'],
+                'incorrect_to_correct_rate':
+                    flip['flips']['incorrect_to_correct_rate'],
+                'successful_perturbations':
+                    flip.get('successful_perturbations'),
+                'successful_perturbation_rate':
+                    flip.get('successful_perturbation_rate'),
+                'successful_perturbation_rate_pct':
+                    flip.get('successful_perturbation_rate_pct'),
+                'flip_count_successful_only':
+                    flip.get('flip_count_successful_only'),
+                'flip_rate_successful_only':
+                    flip.get('flip_rate_successful_only'),
+                'flip_rate_successful_only_pct':
+                    flip.get('flip_rate_successful_only_pct'),
+            })
+
+        if 'perturbation_statistics' in level_results:
+            stats = level_results['perturbation_statistics']
+            row.update({
+                'mean_word_change_rate':
+                    stats.get('mean_word_change_rate'),
+                'mean_similarity_score':
+                    stats.get('mean_similarity_score'),
+                'min_similarity_score':
+                    stats.get('min_similarity_score'),
+                'max_similarity_score':
+                    stats.get('max_similarity_score'),
+            })
+
+            semantic_similarity = stats.get('semantic_similarity', {})
+            row.update({
+                'similarity_count': semantic_similarity.get('count'),
+                'similarity_mean': semantic_similarity.get('mean'),
+                'similarity_median': semantic_similarity.get('median'),
+                'similarity_std': semantic_similarity.get('std'),
+                'similarity_min': semantic_similarity.get('min'),
+                'similarity_max': semantic_similarity.get('max'),
+            })
+
+        return row
 
     def aggregate_results(
         self,
@@ -1702,319 +1770,65 @@ class EvaluationEngine:
                     row.update(domain_results['domain_shift'])
                 rows.append(row)
 
-        # Perturbation results
+        # Perturbation results (in-domain).
+        # Structure: results['perturbation'][domain] = {
+        #     'clean': {...}, 'semantic': {low,medium,high}, 'typo': {low,medium,high}
+        # }
+        # We emit one row per (domain, type, level). The 'clean' baseline is
+        # already captured by the in-domain rows above, so it is skipped here.
         if 'perturbation' in results:
             for domain, pert_results in results['perturbation'].items():
-                for level, level_results in pert_results.items():
-                    if level != 'clean':
-                        row = {
-                            'evaluation_type': 'perturbation',
-                            'source_domain': domain,
-                            'target_domain': domain,
-                            'perturbation_level': level,
-                            **level_results['metrics']
-                        }
-                        if 'robustness_metrics' in level_results:
-                            row.update(level_results['robustness_metrics'])
-                        if 'prediction_flip' in level_results:
-                            flip = level_results['prediction_flip']
-                            row.update({
-                                'flip_count':
-                                    flip['flip_count'],
-
-                                'flip_rate':
-                                    flip['flip_rate'],
-
-                                'flip_rate_pct':
-                                    flip['flip_rate_pct'],
-
-                                'flip_0_to_1_count':
-                                    flip['flip_0_to_1_count'],
-
-                                'flip_1_to_0_count':
-                                    flip['flip_1_to_0_count'],
-
-                                'correct_to_incorrect':
-                                    flip['flips']['correct_to_incorrect'],
-
-                                'incorrect_to_correct':
-                                    flip['flips']['incorrect_to_correct'],
-
-                                'correct_to_incorrect_rate':
-                                    flip['flips']['correct_to_incorrect_rate'],
-
-                                'incorrect_to_correct_rate':
-                                    flip['flips']['incorrect_to_correct_rate'],
-
-                                # Successful perturbation analysis
-                                'successful_perturbations':
-                                    flip.get(
-                                        'successful_perturbations'
-                                    ),
-
-                                'successful_perturbation_rate':
-                                    flip.get(
-                                        'successful_perturbation_rate'
-                                    ),
-
-                                'successful_perturbation_rate_pct':
-                                    flip.get(
-                                        'successful_perturbation_rate_pct'
-                                    ),
-
-                                'flip_count_successful_only':
-                                    flip.get(
-                                        'flip_count_successful_only'
-                                    ),
-
-                                'flip_rate_successful_only':
-                                    flip.get(
-                                        'flip_rate_successful_only'
-                                    ),
-
-                                'flip_rate_successful_only_pct':
-                                    flip.get(
-                                        'flip_rate_successful_only_pct'
-                                    ),
-                            })
-
-                        if 'perturbation_statistics' in level_results:
-                            stats = level_results[
-                                'perturbation_statistics'
-                            ]
-                            row.update({
-                                'changed_samples':
-                                    stats.get(
-                                        'changed_samples'
-                                    ),
-                                'sample_change_rate':
-                                    stats.get(
-                                        'sample_change_rate'
-                                    ),
-                                'mean_word_change_rate':
-                                    stats.get(
-                                        'mean_word_change_rate'
-                                    ),
-                                'median_word_change_rate':
-                                    stats.get(
-                                        'median_word_change_rate'
-                                    ),
-                                'mean_eligible_word_change_rate':
-                                    stats.get(
-                                        'mean_eligible_word_change_rate'
-                                    ),
-                                'mean_word_cosine_similarity':
-                                    stats.get(
-                                        'mean_word_cosine_similarity'
-                                    ),
-                                'min_word_cosine_similarity':
-                                    stats.get(
-                                        'min_word_cosine_similarity'
-                                    ),
-                                'max_word_cosine_similarity':
-                                    stats.get(
-                                        'max_word_cosine_similarity'
-                                    ),
-                            })
-
-                            semantic_similarity = stats.get(
-                                'semantic_similarity',
-                                {}
-                            )
-                            row.update({
-                                'similarity_count':
-                                    semantic_similarity.get(
-                                        'count'
-                                    ),
-                                'similarity_mean':
-                                    semantic_similarity.get(
-                                        'mean'
-                                    ),
-                                'similarity_median':
-                                    semantic_similarity.get(
-                                        'median'
-                                    ),
-                                'similarity_std':
-                                    semantic_similarity.get(
-                                        'std'
-                                    ),
-                                'similarity_min':
-                                    semantic_similarity.get(
-                                        'min'
-                                    ),
-                                'similarity_max':
-                                    semantic_similarity.get(
-                                        'max'
-                                    ),
-                            })
-
+                for ptype in PERTURBATION_TYPES:
+                    type_results = pert_results.get(ptype, {})
+                    for level in PERTURBATION_LEVELS:
+                        if level not in type_results:
+                            continue
+                        row = self._build_perturbation_row(
+                            evaluation_type='perturbation',
+                            source_domain=domain,
+                            target_domain=domain,
+                            perturbation_type=ptype,
+                            perturbation_level=level,
+                            level_results=type_results[level],
+                        )
                         rows.append(row)
 
-        # Cross-domain perturbation results
+        # Cross-domain perturbation results.
+        # Structure: results['cross_domain_perturbation'][key] = {
+        #     'clean': {...}, 'semantic': {low,medium,high}, 'typo': {low,medium,high}
+        # }
+        # We emit the 'clean' baseline row once, then one row per (type, level).
         if 'cross_domain_perturbation' in results:
-            for key, domain_results in (
+            for key, key_results in (
                 results['cross_domain_perturbation'].items()
             ):
                 source, target = key.split('_to_', 1)
 
-                for level, level_results in domain_results.items():
-                    metrics = level_results['metrics']
-                    row = {
-                        'evaluation_type':
-                            'cross_domain_perturbation',
+                # Clean baseline row (metrics only; no robustness/flip stats).
+                if 'clean' in key_results:
+                    rows.append({
+                        'evaluation_type': 'cross_domain_perturbation',
                         'source_domain': source,
                         'target_domain': target,
-                        'perturbation_level': level,
-                        **metrics
-                    }
-                    if level != 'clean':
-                        if 'robustness_metrics' in level_results:
-                            row.update(
-                                level_results['robustness_metrics']
-                            )
-                        if 'prediction_flip' in level_results:
-                            flip = level_results[
-                                'prediction_flip'
-                            ]
-                            row.update({
-                                'flip_count':
-                                    flip['flip_count'],
-                                'flip_rate':
-                                    flip['flip_rate'],
-                                'flip_rate_pct':
-                                    flip['flip_rate_pct'],
-                                'flip_0_to_1_count':
-                                    flip['flip_0_to_1_count'],
-                                'flip_1_to_0_count':
-                                    flip['flip_1_to_0_count'],
-                                'correct_to_incorrect':
-                                    flip['flips'][
-                                        'correct_to_incorrect'
-                                    ],
-                                'incorrect_to_correct':
-                                    flip['flips'][
-                                        'incorrect_to_correct'
-                                    ],
-                                'correct_to_incorrect_rate':
-                                    flip['flips'][
-                                        'correct_to_incorrect_rate'
-                                    ],
-                                'incorrect_to_correct_rate':
-                                    flip['flips'][
-                                        'incorrect_to_correct_rate'
-                                    ],
-                                'successful_perturbations':
-                                    flip[
-                                        'successful_perturbations'
-                                    ],
-                                'successful_perturbation_rate':
-                                    flip.get(
-                                        'successful_perturbation_rate'
-                                    ),
+                        'perturbation_type': 'clean',
+                        'perturbation_level': 'clean',
+                        **key_results['clean']['metrics']
+                    })
 
-                                'successful_perturbation_rate_pct':
-                                    flip.get(
-                                        'successful_perturbation_rate_pct'
-                                    ),
-
-                                'flip_count_successful_only':
-                                    flip.get(
-                                        'flip_count_successful_only'
-                                    ),
-
-                                'flip_rate_successful_only':
-                                    flip.get(
-                                        'flip_rate_successful_only'
-                                    ),
-
-                                'flip_rate_successful_only_pct':
-                                    flip.get(
-                                        'flip_rate_successful_only_pct'
-                                    ),
-                            })
-
-                        if 'perturbation_statistics' in level_results:
-                            stats = level_results[
-                                'perturbation_statistics'
-                            ]
-
-                            row.update({
-                                'changed_samples':
-                                    stats.get(
-                                        'changed_samples'
-                                    ),
-                                'sample_change_rate':
-                                    stats.get(
-                                        'sample_change_rate'
-                                    ),
-                                'mean_word_change_rate':
-                                    stats.get(
-                                        'mean_word_change_rate'
-                                    ),
-                                'median_word_change_rate':
-                                    stats.get(
-                                        'median_word_change_rate'
-                                    ),
-                                'mean_char_change_rate':
-                                    stats.get(
-                                        'mean_char_change_rate'
-                                    ),
-                                'mean_word_cosine_similarity':
-                                    stats.get(
-                                        'mean_word_cosine_similarity'
-                                    ),
-                                'min_word_cosine_similarity':
-                                    stats.get(
-                                        'min_word_cosine_similarity'
-                                    ),
-                                'max_word_cosine_similarity':
-                                    stats.get(
-                                        'max_word_cosine_similarity'
-                                    ),
-                            })
-
-                            # ----------------------------------------------------
-                            # Semantic similarity distribution
-                            # ----------------------------------------------------
-
-                            semantic_similarity = stats.get(
-                                'semantic_similarity',
-                                {}
-                            )
-
-                            row.update({
-                                'similarity_count':
-                                    semantic_similarity.get(
-                                        'count'
-                                    ),
-
-                                'similarity_mean':
-                                    semantic_similarity.get(
-                                        'mean'
-                                    ),
-
-                                'similarity_median':
-                                    semantic_similarity.get(
-                                        'median'
-                                    ),
-
-                                'similarity_std':
-                                    semantic_similarity.get(
-                                        'std'
-                                    ),
-
-                                'similarity_min':
-                                    semantic_similarity.get(
-                                        'min'
-                                    ),
-
-                                'similarity_max':
-                                    semantic_similarity.get(
-                                        'max'
-                                    ),
-                            })
-
-                    rows.append(row)
+                for ptype in PERTURBATION_TYPES:
+                    type_results = key_results.get(ptype, {})
+                    for level in PERTURBATION_LEVELS:
+                        if level not in type_results:
+                            continue
+                        row = self._build_perturbation_row(
+                            evaluation_type='cross_domain_perturbation',
+                            source_domain=source,
+                            target_domain=target,
+                            perturbation_type=ptype,
+                            perturbation_level=level,
+                            level_results=type_results[level],
+                        )
+                        rows.append(row)
 
         df = pd.DataFrame(rows)
 
@@ -2100,18 +1914,32 @@ class EvaluationEngine:
             report_lines.append("-" * 80)
             for domain, pert_results in results['perturbation'].items():
                 report_lines.append(f"  {domain}:")
-                for level in ['clean', 'low', 'medium', 'high']:
-                    if level in pert_results:
-                        metrics = pert_results[level]['metrics']
-                        macro_f1 = metrics['macro_f1']
-                        report_lines.append(f"    {level.capitalize()}: Macro-F1={macro_f1:.4f}")
 
-                        if level != 'clean' and 'robustness_metrics' in pert_results[level]:
-                            rob = pert_results[level]['robustness_metrics']
+                # Shared clean baseline first.
+                if 'clean' in pert_results:
+                    clean_f1 = pert_results['clean']['metrics']['macro_f1']
+                    report_lines.append(f"    Clean: Macro-F1={clean_f1:.4f}")
+
+                # Then each perturbation type with its three levels.
+                for ptype in PERTURBATION_TYPES:
+                    type_results = pert_results.get(ptype, {})
+                    if not type_results:
+                        continue
+                    report_lines.append(f"    [{ptype}]")
+                    for level in PERTURBATION_LEVELS:
+                        if level not in type_results:
+                            continue
+                        level_results = type_results[level]
+                        macro_f1 = level_results['metrics']['macro_f1']
+                        report_lines.append(
+                            f"      {level.capitalize()}: Macro-F1={macro_f1:.4f}"
+                        )
+                        if 'robustness_metrics' in level_results:
+                            rob = level_results['robustness_metrics']
                             drop = rob.get('macro_f1_drop', 0)
                             drop_pct = rob.get('macro_f1_drop_pct', 0)
                             report_lines.append(
-                                f"      Drop: {drop:.4f} ({drop_pct:.2f}%)"
+                                f"        Drop: {drop:.4f} ({drop_pct:.2f}%)"
                             )
                 report_lines.append("")
 

@@ -157,79 +157,6 @@ class BayesianTester:
         
         return results
     
-    def bayesian_hierarchical_comparison(
-        self,
-        model_scores: Dict[str, np.ndarray],
-        rope: Optional[float] = None
-    ) -> Dict[str, Any]:
-        """
-        Perform Bayesian hierarchical comparison across multiple models.
-        
-        Args:
-            model_scores: Dictionary mapping model names to score arrays
-            rope: ROPE threshold (uses default if None)
-            
-        Returns:
-            Dictionary with hierarchical comparison results
-        """
-        if rope is None:
-            rope = self.rope_threshold
-        
-        logger.info(f"Performing Bayesian hierarchical comparison for {len(model_scores)} models")
-        
-        model_names = list(model_scores.keys())
-        n_models = len(model_names)
-        
-        # Calculate pairwise comparisons
-        pairwise_results = {}
-        
-        for i in range(n_models):
-            for j in range(i + 1, n_models):
-                model_a = model_names[i]
-                model_b = model_names[j]
-                
-                comparison = self.bayesian_signed_rank_test(
-                    model_scores[model_a],
-                    model_scores[model_b],
-                    rope
-                )
-                
-                key = f"{model_a}_vs_{model_b}"
-                pairwise_results[key] = comparison
-        
-        # Calculate overall statistics
-        model_stats = {}
-        for name, scores in model_scores.items():
-            model_stats[name] = {
-                'mean': float(np.mean(scores)),
-                'median': float(np.median(scores)),
-                'std': float(np.std(scores)),
-                'min': float(np.min(scores)),
-                'max': float(np.max(scores))
-            }
-        
-        # Rank models by mean performance
-        ranked_models = sorted(
-            model_stats.items(),
-            key=lambda x: x[1]['mean'],
-            reverse=True
-        )
-        
-        results = {
-            'test_type': 'bayesian_hierarchical',
-            'n_models': n_models,
-            'model_names': model_names,
-            'model_statistics': model_stats,
-            'pairwise_comparisons': pairwise_results,
-            'ranking': [name for name, _ in ranked_models],
-            'rope_threshold': rope
-        }
-        
-        logger.info("Hierarchical comparison complete")
-        
-        return results
-
-
 class ROPEAnalyzer:
     """
     Implements Region of Practical Equivalence (ROPE) analysis.
@@ -359,37 +286,6 @@ class ROPEAnalyzer:
         
         return max(0.0, min(1.0, prob))
     
-    def compare_multiple_with_rope(
-        self,
-        baseline_scores: np.ndarray,
-        comparison_scores: Dict[str, np.ndarray],
-        rope: Optional[float] = None
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Compare multiple models against a baseline using ROPE.
-        
-        Args:
-            baseline_scores: Baseline model scores
-            comparison_scores: Dictionary of comparison model scores
-            rope: ROPE threshold
-            
-        Returns:
-            Dictionary with ROPE analysis for each comparison
-        """
-        if rope is None:
-            rope = self.rope_threshold
-        
-        logger.info(f"Comparing {len(comparison_scores)} models against baseline")
-        
-        results = {}
-        
-        for name, scores in comparison_scores.items():
-            differences = scores - baseline_scores
-            results[name] = self.analyze_rope(differences, rope)
-        
-        return results
-
-
 class SignificanceTester:
     """
     Implements various significance testing utilities.
@@ -892,29 +788,6 @@ class StatisticalAnalyzer:
             return f"{results['model_a_name']} and {results['model_b_name']} are practically equivalent"
         else:
             return "Results are inconclusive - further investigation needed"
-    
-    def save_analysis(
-        self,
-        results: Dict[str, Any],
-        filename: str = "statistical_analysis.json"
-    ) -> str:
-        """
-        Save analysis results to JSON file.
-        
-        Args:
-            results: Analysis results dictionary
-            filename: Output filename
-            
-        Returns:
-            Path to saved file
-        """
-        output_path = os.path.join(self.output_dir, filename)
-        
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        logger.info(f"Analysis saved to {output_path}")
-        return output_path
     
     def generate_analysis_report(
         self,

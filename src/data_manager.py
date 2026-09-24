@@ -396,51 +396,6 @@ class DataManager:
         
         return result
     
-    def organize_by_domain(
-        self,
-        df: pd.DataFrame
-    ) -> Dict[str, pd.DataFrame]:
-        """
-        Organize DataFrame by domain for domain-specific operations.
-        Args:
-            df: DataFrame to organize
-        Returns:
-            Dictionary mapping domain names to their respective DataFrames
-        """
-        logger.info("Organizing data by domain")
-        
-        domain_data = {}
-        for domain in self.domains:
-            domain_df = df[df['domain'] == domain].copy()
-            domain_data[domain] = domain_df
-            logger.info(f"  Domain '{domain}': {len(domain_df)} samples")
-        
-        return domain_data
-    
-    def get_domain_statistics(self, df: pd.DataFrame) -> Dict[str, Dict]:
-        """
-        Calculate statistics for each domain in the dataset.
-        Args:
-            df: DataFrame to analyze
-        Returns:
-            Dictionary with statistics for each domain
-        """
-        statistics = {}
-        
-        for domain in self.domains:
-            domain_df = df[df['domain'] == domain]
-            
-            statistics[domain] = {
-                'total_samples': len(domain_df),
-                'clickbait_count': (domain_df['label'] == 1).sum(),
-                'non_clickbait_count': (domain_df['label'] == 0).sum(),
-                'clickbait_ratio': (domain_df['label'] == 1).mean(),
-                'avg_text_length': domain_df['text'].str.len().mean(),
-                'median_text_length': domain_df['text'].str.len().median()
-            }
-        
-        return statistics
-    
     def get_summary(self) -> Dict:
         """
         Get a summary of the loaded dataset.
@@ -513,26 +468,3 @@ class DatasetValidator:
         
         return issues
     
-    @staticmethod
-    def validate_domain_distribution(df: pd.DataFrame) -> bool:
-        """
-        Check if domains are reasonably distributed.
-        Args:
-            df: DataFrame to validate
-        Returns:
-            True if distribution is acceptable, False otherwise
-        """
-        domain_counts = df['domain'].value_counts()
-        min_count = domain_counts.min()
-        max_count = domain_counts.max()
-        
-        ratio = min_count / max_count if max_count > 0 else 0
-        is_balanced = ratio >= 0.5
-        
-        if not is_balanced:
-            logger.warning(
-                f"Domain distribution imbalance detected. "
-                f"Min: {min_count}, Max: {max_count}, Ratio: {ratio:.2%}"
-            )
-        
-        return is_balanced

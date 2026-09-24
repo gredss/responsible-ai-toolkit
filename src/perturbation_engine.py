@@ -44,13 +44,17 @@ import logging
 from pathlib import Path
 from functools import lru_cache
 from abc import ABC, abstractmethod
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import torch
 
 from transformers import AutoTokenizer, AutoModel
+
+# Used only by the character-level typo perturbation (see _TypoSimilarityChecker).
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from debug_logger import (
     dbg_perturbation_samples,
@@ -83,6 +87,49 @@ PERTURBATION_INTENSITIES = {
     "medium": 0.20,
     "high": 0.30,
 }
+
+
+# =============================================================================
+# TYPO PERTURBATION CONFIGURATION
+# =============================================================================
+#
+# The typo perturbation is a SEPARATE method from the semantic word
+# substitution above. It corrupts characters (keyboard-style typos) instead
+# of swapping whole words for synonyms.
+#
+# It uses its OWN level names so there is never any confusion about what a
+# level means:
+#
+#     "typo_low"    -> edit ~10% of the characters
+#     "typo_medium" -> edit ~30% of the characters
+#     "typo_high"   -> edit ~50% of the characters
+#
+# NOTE (important for the thesis write-up):
+#   The number here is the TARGET fraction of characters to edit. The typo
+#   loop keeps a candidate only if its ACTUAL character edit ratio lands
+#   inside [target - tolerance, target + tolerance]. The TF-IDF cosine
+#   similarity is ALSO measured for every candidate, but at this stage it is
+#   recorded as a DIAGNOSTIC value (with an in-range flag against the
+#   0.80-0.95 reference band) and is NOT used to reject candidates. This lets
+#   us study empirically how similarity behaves at 10 / 30 / 50 % before
+#   deciding whether cosine should become a hard acceptance criterion.
+
+TYPO_INTENSITIES = {
+    "typo_low": 0.10,
+    "typo_medium": 0.30,
+    "typo_high": 0.50,
+}
+
+# How far the ACTUAL character edit ratio is allowed to differ from the target
+# fraction above and still be accepted (the "little forgiveness"). Example:
+# a "typo_medium" target of 0.30 with tolerance 0.05 accepts any candidate
+# whose real edit ratio is between 0.25 and 0.35.
+TYPO_EDIT_RATIO_TOLERANCE = 0.05
+
+# Reference cosine band used ONLY to set the diagnostic "similarity_in_range"
+# flag on typo rows. It does NOT reject candidates (see note above).
+TYPO_SIM_REFERENCE_MIN = 0.80
+TYPO_SIM_REFERENCE_MAX = 0.95
 
 
 # =============================================================================
@@ -139,6 +186,89 @@ def tokenize_word_spans(
     ]
 
 # =============================================================================
+# CHARACTER-LEVEL TF-IDF COSINE SIMILARITY (used by the typo perturbation only)
+# =============================================================================
+
+class _TypoSimilarityChecker:
+    """
+    Character-level TF-IDF cosine similarity between two strings.
+
+    This is used ONLY by the typo perturbation. It is a deliberately simple,
+    character-based measure (not IndoBERT), because a typo corrupts characters
+    rather than swapping meaning-bearing words. It answers the question:
+    "how much did the surface text change?" rather than "did the meaning
+    change?".
+
+    How it works, step by step:
+      1. Each string is turned into character n-grams (2 to 4 characters long)
+         using scikit-learn's TfidfVectorizer with analyzer="char_wb".
+         "char_wb" means the n-grams are built inside word boundaries, which
+         suits short Indonesian headlines.
+      2. Each string becomes a TF-IDF vector over those n-grams.
+      3. We take the cosine similarity of the two vectors.
+
+    Cosine similarity formula (the same one used throughout this project):
+
+        CosSim(u, v) = (u . v) / (||u|| * ||v||)
+                     = sum_i(u_i * v_i)
+                       / ( sqrt(sum_i u_i^2) * sqrt(sum_i v_i^2) )
+
+    The result is a float in [0, 1]:
+        1.0  -> identical strings
+        ~0.0 -> almost no shared character n-grams
+    """
+
+    def __init__(self):
+        # char_wb = character n-grams that stay within word boundaries.
+        # ngram_range=(2, 4) = look at 2-, 3-, and 4-character chunks.
+        self._vectorizer = TfidfVectorizer(
+            analyzer="char_wb",
+            ngram_range=(2, 4),
+        )
+
+    def score(self, original: str, perturbed: str) -> float:
+        """
+        Return the cosine similarity between two strings, in [0, 1].
+
+        Edge cases are handled explicitly so the caller never crashes:
+          - if either string is empty  -> 0.0
+          - if the two strings are identical -> 1.0
+          - if the vectorizer fails for any reason -> 0.0 (and a warning)
+        """
+        if not original or not perturbed:
+            return 0.0
+
+        if original == perturbed:
+            return 1.0
+
+        try:
+            # Fit the vectorizer on just these two strings and transform them
+            # into TF-IDF vectors. matrix[0] is the original, matrix[1] the
+            # perturbed string.
+            matrix = self._vectorizer.fit_transform(
+                [original, perturbed]
+            )
+
+            similarity = cosine_similarity(
+                matrix[0],
+                matrix[1],
+            )[0][0]
+
+            return float(similarity)
+
+        except Exception as exc:
+            logger.warning(
+                "TF-IDF similarity calculation failed: %s",
+                exc,
+            )
+            return 0.0
+
+
+# A single shared instance is enough; it holds no per-call state.
+_typo_checker = _TypoSimilarityChecker()
+
+
+# =============================================================================
 # INDOBERT CONTEXTUAL SEMANTIC SIMILARITY
 # =============================================================================
 
@@ -191,6 +321,10 @@ class _SimilarityChecker:
             model_name
         ).to(self.device)
 
+        print(f"Model Name: {model_name}")
+        print(f"Tokenizer: {self.tokenizer}")
+        print(f"Model Used: {self.model}")
+        
         self.model.eval()
 
         logger.info(
@@ -1054,295 +1188,13 @@ class IndonesianThesaurus:
     # BACKWARD-COMPATIBLE GET ENTRY
     # =========================================================================
 
-    def get_entry(
-        self,
-        word: str,
-    ) -> Optional[Dict]:
-        """
-        Backward-compatible method.
-
-        Returns only the thesaurus entry.
-        """
-
-        result = self.get_entry_with_metadata(
-            word
-        )
-
-        if result is None:
-            return None
-
-        return result["entry"]
-
     # =========================================================================
     # POS
     # =========================================================================
 
-    def get_pos(
-        self,
-        word: str,
-    ) -> Optional[str]:
-        """
-        Return POS tag.
-        """
-
-        result = self.get_entry_with_metadata(
-            word
-        )
-
-        if result is None:
-            return None
-
-        return result["entry"].get(
-            "tag"
-        )
-
     # =========================================================================
     # CANDIDATES
     # =========================================================================
-
-    def get_candidates_with_pos(
-        self,
-        word: str,
-    ) -> List[Dict[str, object]]:
-        """
-        Generate thesaurus candidates.
-
-        Lookup strategy:
-
-            direct
-                ↓
-            reverse parent
-                ↓
-            stemmed
-
-        Candidate filtering:
-
-            1. Candidate != original
-            2. Candidate != antonym
-            3. Same POS when candidate POS can be established
-            4. Unknown POS is allowed only when candidate is explicitly
-               listed as a synonym of the selected parent entry
-
-        Returns:
-
-            [
-                {
-                    "candidate": str,
-                    "candidate_pos": Optional[str],
-                    "pos_verified": bool,
-                    "pos_source": str,
-                    "lookup_source": str,
-                    "parent_word": str,
-                }
-            ]
-        """
-
-        # =====================================================================
-        # Find original word's thesaurus entry
-        # =====================================================================
-
-        original_lookup = (
-            self.get_entry_with_metadata(
-                word
-            )
-        )
-
-        if original_lookup is None:
-            return []
-
-        entry = original_lookup["entry"]
-
-        original_word = (
-            str(word)
-            .strip()
-            .lower()
-        )
-
-        original_pos = entry.get(
-            "tag"
-        )
-
-        if not original_pos:
-            return []
-
-        original_parent = (
-            original_lookup["parent_word"]
-        )
-
-        original_lookup_source = (
-            original_lookup["lookup_source"]
-        )
-
-        # =====================================================================
-        # Antonyms
-        # =====================================================================
-
-        antonyms = {
-            str(x)
-            .strip()
-            .lower()
-            for x in entry.get(
-                "antonim",
-                [],
-            )
-        }
-
-        candidates = []
-
-        # =====================================================================
-        # Candidate generation
-        # =====================================================================
-
-        for raw_candidate in entry.get(
-            "sinonim",
-            [],
-        ):
-
-            candidate = (
-                str(raw_candidate)
-                .strip()
-            )
-
-            if not candidate:
-                continue
-
-            candidate_lower = (
-                candidate.lower()
-            )
-
-            # -----------------------------------------------------------------
-            # Exclude original
-            # -----------------------------------------------------------------
-
-            if candidate_lower == original_word:
-                continue
-
-            # -----------------------------------------------------------------
-            # Exclude antonyms
-            # -----------------------------------------------------------------
-
-            if candidate_lower in antonyms:
-                continue
-
-            # -----------------------------------------------------------------
-            # Try to determine candidate POS
-            #
-            # Same lookup strategy:
-            #
-            #     direct
-            #     reverse parent
-            #     stemmed
-            # -----------------------------------------------------------------
-
-            candidate_lookup = (
-                self.get_entry_with_metadata(
-                    candidate
-                )
-            )
-
-            if candidate_lookup is not None:
-                candidate_entry = candidate_lookup["entry"]
-                candidate_pos = candidate_entry.get("tag")
-
-                # Candidate POS is known
-                if candidate_pos is not None:
-                    # Reject candidate if POS differs
-                    if candidate_pos != original_pos:
-                        continue
-                    candidates.append(
-                        {
-                            "candidate": candidate,
-                            "candidate_pos": (
-                                candidate_pos
-                            ),
-                            "pos_verified": True,
-                            "pos_source": (
-                                candidate_lookup[
-                                    "lookup_source"
-                                ]
-                            ),
-                            "lookup_source": (
-                                candidate_lookup[
-                                    "lookup_source"
-                                ]
-                            ),
-                            "parent_word": (
-                                candidate_lookup[
-                                    "parent_word"
-                                ]
-                            ),
-                            "original_lookup_source": (
-                                original_lookup_source
-                            ),
-                            "original_parent_word": (
-                                original_parent
-                            ),
-                        }
-                    )
-
-                    continue
-
-            # =================================================================
-            # Candidate has no independently recoverable POS
-            #
-            # BUT:
-            #
-            # It is explicitly listed under the original thesaurus entry.
-            #
-            # Therefore we can safely inherit the parent's POS.
-            # =================================================================
-
-            candidates.append(
-                {
-                    "candidate": candidate,
-
-                    "candidate_pos": (
-                        original_pos
-                    ),
-
-                    "pos_verified": True,
-
-                    "pos_source": (
-                        "inherited_from_original_parent"
-                    ),
-
-                    "lookup_source": (
-                        "synonym_list"
-                    ),
-
-                    "parent_word": (
-                        original_parent
-                    ),
-
-                    "original_lookup_source": (
-                        original_lookup_source
-                    ),
-
-                    "original_parent_word": (
-                        original_parent
-                    ),
-                }
-            )
-
-        # =====================================================================
-        # Remove duplicate candidates
-        # =====================================================================
-
-        unique = {}
-
-        for item in candidates:
-
-            key = (
-                item["candidate"]
-                .lower()
-            )
-
-            if key not in unique:
-                unique[key] = item
-
-        return list(
-            unique.values()
-        )
 
     def diagnose_candidates(
         self,
@@ -1667,16 +1519,6 @@ class SemanticWordSubstitution(
                 continue
 
             # ================================================================
-            # Lookup statistics
-            # ================================================================
-            lookup_source = diagnosis[
-                "lookup_source"
-            ]
-            lookup_stats[
-                lookup_source
-            ] += 1
-
-            # ================================================================
             # No synonym candidates
             # ================================================================
             if diagnosis["synonyms_total"] == 0:
@@ -1808,23 +1650,7 @@ class SemanticWordSubstitution(
                 "NO_VALID_SEMANTIC_CANDIDATE",
                 target_intensity=intensity,
                 total_words=len(words),
-
-                direct_lookup_words=(
-                    lookup_stats["direct"]
-                ),
-
-                reverse_parent_lookup_words=(
-                    lookup_stats["reverse_parent"]
-                ),
-
-                stemmed_lookup_words=(
-                    lookup_stats["stemmed"]
-                ),
-
-                failed_lookup_words=(
-                    lookup_stats["failed"]
-                ),
-
+                failed_lookup_words=lookup_stats["failed"],
                 diagnostic_stats=diagnostic_stats,
                 word_diagnostics=word_diagnostics,
             )
@@ -1856,51 +1682,11 @@ class SemanticWordSubstitution(
                 eligible_words=len(eligible),
                 target_words=target_count,
                 valid_replacements=0,
-
-                direct_lookup_words=lookup_stats["direct"],
-                reverse_parent_lookup_words=lookup_stats["reverse_parent"],
-                stemmed_lookup_words=lookup_stats["stemmed"],
                 failed_lookup_words=lookup_stats["failed"],
-
                 diagnostic_stats=diagnostic_stats,
                 word_diagnostics=word_diagnostics,
             )
 
-        #if len(eligible) < target_count:
-        #    return self._infeasible_result(
-        #        text,
-        #        "INSUFFICIENT_ELIGIBLE_WORDS",
-        #
-        #        target_intensity=intensity,
-        #
-        #        total_words=len(words),
-        #
-        #        eligible_words=len(eligible),
-        #
-        #        target_words=target_count,
-        #
-        #        valid_replacements=0,
-        #
-        #        direct_lookup_words=(
-        #            lookup_stats["direct"]
-        #        ),
-        #
-        #        reverse_parent_lookup_words=(
-        #            lookup_stats["reverse_parent"]
-        #        ),
-        #
-        #        stemmed_lookup_words=(
-        #            lookup_stats["stemmed"]
-        #        ),
-        #
-        #        failed_lookup_words=(
-        #            lookup_stats["failed"]
-        #        ),
-        #
-        #        diagnostic_stats=diagnostic_stats,
-        #
-        #        word_diagnostics=word_diagnostics,
-        #    )
 
         # ---------------------------------------------------------------------
         # Shuffle eligible words so the selected positions vary while remaining
@@ -1992,21 +1778,8 @@ class SemanticWordSubstitution(
                 total_words=len(words),
                 eligible_words=len(eligible),
                 target_words=target_count,
-                valid_replacements=len(
-                    replacements
-                ),
-                direct_lookup_words=(
-                    lookup_stats["direct"]
-                ),
-                reverse_parent_lookup_words=(
-                    lookup_stats["reverse_parent"]
-                ),
-                stemmed_lookup_words=(
-                    lookup_stats["stemmed"]
-                ),
-                failed_lookup_words=(
-                    lookup_stats["failed"]
-                ),
+                valid_replacements=len(replacements),
+                failed_lookup_words=lookup_stats["failed"],
                 diagnostic_stats=diagnostic_stats,
                 word_diagnostics=word_diagnostics,
             )
@@ -2105,17 +1878,10 @@ class SemanticWordSubstitution(
 
             "perturbation_level": None,
 
-            "perturbation_rule": (
-                "semantic_similarity_based_word_substitution"
-            ),
-
             "target_intensity": intensity,
 
             "total_words": len(words),
 
-            "direct_lookup_words": lookup_stats["direct"],
-            "reverse_parent_lookup_words": lookup_stats["reverse_parent"],
-            "stemmed_lookup_words": lookup_stats["stemmed"],
             "failed_lookup_words": lookup_stats["failed"],
 
             "eligible_words": len(eligible),
@@ -2127,10 +1893,6 @@ class SemanticWordSubstitution(
             "eligible_shortage": (
                 len(eligible) < target_count
             ),
-            "eligible_shortage_count": max(
-                0,
-                target_count - len(eligible)
-            ),
             "feasibility_reason": (
                 "SUFFICIENT_ELIGIBLE_WORDS"
                 if len(eligible) >= target_count
@@ -2140,7 +1902,6 @@ class SemanticWordSubstitution(
             "words_changed": words_changed,
 
             "actual_ratio_all_words": actual_ratio_all_words,
-            "actual_ratio_eligible_words": actual_ratio_eligible,
 
             "diagnostic_stats": diagnostic_stats,
             "word_diagnostics": word_diagnostics,
@@ -2153,9 +1914,12 @@ class SemanticWordSubstitution(
                 words_changed == target_count
             ),
 
-            "word_cosine_similarity_mean": similarity_mean,
-            "word_cosine_similarity_min": similarity_min,
-            "word_cosine_similarity_max": similarity_max,
+            # Neutral, type-agnostic names: for the semantic mechanism this is
+            # the per-word contextual cosine; for typo it is the whole-text
+            # character TF-IDF cosine. The name no longer implies "word".
+            "similarity_score_mean": similarity_mean,
+            "similarity_score_min": similarity_min,
+            "similarity_score_max": similarity_max,
             "replacements": replacements,
         }
 
@@ -2213,12 +1977,7 @@ class SemanticWordSubstitution(
         eligible_words: int = 0,
         target_words: int = 0,
         valid_replacements: int = 0,
-
-        direct_lookup_words: int = 0,
-        reverse_parent_lookup_words: int = 0,
-        stemmed_lookup_words: int = 0,
         failed_lookup_words: int = 0,
-
         diagnostic_stats: Optional[Dict[str, object]] = None,
         word_diagnostics: Optional[List[Dict[str, object]]] = None,
     ) -> Dict[str, object]:
@@ -2228,10 +1987,6 @@ class SemanticWordSubstitution(
             "perturbed_text": text,
 
             "perturbation_level": None,
-
-            "perturbation_rule": (
-                f"INFEASIBLE:{reason}"
-            ),
 
             "target_intensity": target_intensity,
 
@@ -2243,19 +1998,7 @@ class SemanticWordSubstitution(
 
             "words_changed": valid_replacements,
 
-            "direct_lookup_words": direct_lookup_words,
-
-            "reverse_parent_lookup_words": (
-                reverse_parent_lookup_words
-            ),
-
-            "stemmed_lookup_words": (
-                stemmed_lookup_words
-            ),
-
-            "failed_lookup_words": (
-                failed_lookup_words
-            ),
+            "failed_lookup_words": failed_lookup_words,
 
             # ============================================================
             # FEASIBILITY
@@ -2267,11 +2010,6 @@ class SemanticWordSubstitution(
 
             "eligible_shortage": (
                 eligible_words < target_words
-            ),
-
-            "eligible_shortage_count": max(
-                0,
-                target_words - eligible_words
             ),
 
             "feasibility_reason": reason,
@@ -2298,26 +2036,591 @@ class SemanticWordSubstitution(
                 else 0.0
             ),
 
-            "actual_ratio_eligible_words": (
-                valid_replacements / eligible_words
-                if eligible_words > 0
-                else 0.0
-            ),
-
             "is_same_as_original": True,
 
             "similarity_in_range": False,
 
             "perturbation_in_range": False,
 
-            "word_cosine_similarity_mean": np.nan,
+            "similarity_score_mean": np.nan,
 
-            "word_cosine_similarity_min": np.nan,
+            "similarity_score_min": np.nan,
 
-            "word_cosine_similarity_max": np.nan,
+            "similarity_score_max": np.nan,
 
             "replacements": [],
         }
+
+
+# =============================================================================
+# TYPO (CHARACTER-LEVEL) PERTURBATION
+# =============================================================================
+
+class TypoCharacterPerturbation(BasePerturbation):
+    """
+    Character-level typo perturbation.
+
+    This is a SEPARATE method from SemanticWordSubstitution. Instead of
+    swapping whole words for synonyms, it introduces realistic keyboard typos
+    into the characters of the text.
+
+    Four typo operations are used (all based on a QWERTY keyboard layout):
+        - substitution : replace a letter with a neighbouring key   (e.g. n->m)
+        - delete       : drop a letter                              (e.g. buku->buk)
+        - insert       : add a neighbouring key after a letter      (e.g. bu->bku)
+        - swap         : swap two adjacent letters                  (e.g. ab->ba)
+
+    HOW A LEVEL IS SATISFIED
+    ------------------------
+    Each level has a TARGET character edit ratio (see TYPO_INTENSITIES):
+
+        typo_low    -> 0.10   (edit ~10% of characters)
+        typo_medium -> 0.30   (edit ~30% of characters)
+        typo_high   -> 0.50   (edit ~50% of characters)
+
+    The flow for one text is exactly:
+
+        target ratio (0.10 / 0.30 / 0.50)
+              |
+              v
+        generate a candidate (apply typo operations)
+              |
+              v
+        measure the ACTUAL character edit ratio (Levenshtein / length)
+              |
+              v
+        measure the TF-IDF cosine similarity
+              |
+              v
+        record BOTH values
+              |
+              v
+        keep the candidate only if the ACTUAL edit ratio is within
+        [target - tolerance, target + tolerance]; otherwise try again.
+
+    IMPORTANT: cosine similarity is measured and stored, but it does NOT
+    reject a candidate at this stage. We keep it as a diagnostic so we can
+    study, empirically, how similarity behaves at 10 / 30 / 50 % before
+    deciding whether to promote it to a hard acceptance criterion.
+    """
+
+    def __init__(self, random_seed: int = 42):
+        # A private, seeded random generator makes the typos reproducible
+        # without touching Python's global random state.
+        self._rng = random.Random(random_seed)
+
+        # QWERTY neighbours for each letter. Used to pick a "realistic" wrong
+        # key for substitution and insertion.
+        self.keyboard_neighbors = {
+            "a": ["s", "q", "w", "z"],
+            "b": ["v", "g", "h", "n"],
+            "c": ["x", "d", "f", "v"],
+            "d": ["s", "e", "r", "f", "c", "x"],
+            "e": ["w", "r", "d", "s"],
+            "f": ["d", "r", "t", "g", "v", "c"],
+            "g": ["f", "t", "y", "h", "b", "v"],
+            "h": ["g", "y", "u", "j", "n", "b"],
+            "i": ["u", "o", "k", "j"],
+            "j": ["h", "u", "i", "k", "m", "n"],
+            "k": ["j", "i", "o", "l", "m"],
+            "l": ["k", "o", "p"],
+            "m": ["n", "j", "k"],
+            "n": ["b", "h", "j", "m"],
+            "o": ["i", "p", "l", "k"],
+            "p": ["o", "l"],
+            "q": ["w", "a"],
+            "r": ["e", "t", "f", "d"],
+            "s": ["a", "w", "e", "d", "x", "z"],
+            "t": ["r", "y", "g", "f"],
+            "u": ["y", "i", "j", "h"],
+            "v": ["c", "f", "g", "b"],
+            "w": ["q", "e", "s", "a"],
+            "x": ["z", "s", "d", "c"],
+            "y": ["t", "u", "h", "g"],
+            "z": ["a", "s", "x"],
+        }
+
+        logger.info("TypoCharacterPerturbation initialized")
+
+    # =========================================================================
+    # PUBLIC (text-only, kept for API symmetry with the other perturbation)
+    # =========================================================================
+
+    def perturb(
+        self,
+        text: str,
+        intensity: Optional[float] = None,
+    ) -> str:
+        result = self.perturb_with_metadata(
+            text=text,
+            intensity=intensity,
+        )
+        return result["perturbed_text"]
+
+    # =========================================================================
+    # MAIN
+    # =========================================================================
+
+    def perturb_with_metadata(
+        self,
+        text: str,
+        intensity: Optional[float] = None,
+        max_attempts: int = 60,
+    ) -> Dict[str, object]:
+        """
+        Apply typo perturbation to one text and return full metadata.
+
+        Args:
+            text:        the input string.
+            intensity:   TARGET fraction of characters to edit (e.g. 0.30).
+                         Must be supplied by the caller (PerturbationEngine
+                         passes the value that matches the chosen level).
+            max_attempts: how many candidates to try while searching for one
+                         whose actual edit ratio lands in the target band.
+
+        Returns:
+            A metadata dict that reuses the SAME contract keys as the semantic
+            word substitution (original_text, perturbed_text, is_same_as_original,
+            similarity_in_range, perturbation_in_range, actual_ratio_all_words,
+            etc.) so the DataFrame/CSV columns stay consistent, PLUS a few
+            typo-specific, honestly-named keys (char_edit_ratio, typo_operations,
+            char_cosine_similarity).
+        """
+        if text is None:
+            text = ""
+
+        text = str(text)
+
+        if intensity is None:
+            raise ValueError(
+                "Typo intensity must be explicitly supplied."
+            )
+
+        target_ratio = float(intensity)
+
+        # Empty / whitespace-only text cannot be perturbed.
+        if not text.strip():
+            return self._infeasible_result(
+                text,
+                reason="EMPTY_TEXT",
+                target_intensity=target_ratio,
+            )
+
+        # Count the characters that can actually be typo'd (letters only).
+        total_chars = len(text)
+        alpha_chars = sum(1 for c in text if c.isalpha())
+
+        if alpha_chars == 0:
+            return self._infeasible_result(
+                text,
+                reason="NO_ALPHABETIC_CHARACTERS",
+                target_intensity=target_ratio,
+                total_chars=total_chars,
+            )
+
+        # Accept any candidate whose real edit ratio is within this window.
+        lower_bound = target_ratio - TYPO_EDIT_RATIO_TOLERANCE
+        upper_bound = target_ratio + TYPO_EDIT_RATIO_TOLERANCE
+
+        # -------------------------------------------------------------------
+        # Try up to max_attempts candidates. Keep every candidate we generate
+        # so that, if none land inside the band, we can still return the
+        # closest one (clearly flagged as out of range) instead of crashing.
+        # -------------------------------------------------------------------
+        best_candidate = None          # candidate closest to the target band
+        best_distance = None           # how far that candidate's ratio is from the band
+
+        for _ in range(max_attempts):
+
+            candidate, operations = self._generate_candidate(
+                text,
+                target_ratio,
+            )
+
+            # Skip candidates that did not actually change anything.
+            if candidate == text:
+                continue
+
+            # STEP: actual character edit ratio (Levenshtein / length).
+            actual_ratio = self._character_edit_ratio(text, candidate)
+
+            # STEP: TF-IDF cosine similarity (diagnostic only).
+            similarity = _typo_checker.score(text, candidate)
+
+            # Is the actual edit ratio inside the accepted band?
+            ratio_in_band = (lower_bound <= actual_ratio <= upper_bound)
+
+            if ratio_in_band:
+                # Found a good candidate: build and return immediately.
+                return self._build_result(
+                    original=text,
+                    perturbed=candidate,
+                    operations=operations,
+                    actual_ratio=actual_ratio,
+                    similarity=similarity,
+                    total_chars=total_chars,
+                    target_intensity=target_ratio,
+                    edit_ratio_in_band=True,
+                )
+
+            # Otherwise remember the closest-to-band candidate as a fallback.
+            distance = self._distance_to_band(
+                actual_ratio,
+                lower_bound,
+                upper_bound,
+            )
+            if best_distance is None or distance < best_distance:
+                best_distance = distance
+                best_candidate = (
+                    candidate,
+                    operations,
+                    actual_ratio,
+                    similarity,
+                )
+
+        # -------------------------------------------------------------------
+        # No candidate landed inside the target edit-ratio band.
+        # Return the closest one we saw, clearly flagged as out of range.
+        # (If we somehow never produced a changed candidate, report infeasible.)
+        # -------------------------------------------------------------------
+        if best_candidate is None:
+            return self._infeasible_result(
+                text,
+                reason="NO_CANDIDATE_CHANGED_TEXT",
+                target_intensity=target_ratio,
+                total_chars=total_chars,
+            )
+
+        candidate, operations, actual_ratio, similarity = best_candidate
+
+        return self._build_result(
+            original=text,
+            perturbed=candidate,
+            operations=operations,
+            actual_ratio=actual_ratio,
+            similarity=similarity,
+            total_chars=total_chars,
+            target_intensity=target_ratio,
+            edit_ratio_in_band=False,
+        )
+
+    # =========================================================================
+    # RESULT BUILDERS
+    # =========================================================================
+
+    def _build_result(
+        self,
+        original: str,
+        perturbed: str,
+        operations: List[str],
+        actual_ratio: float,
+        similarity: float,
+        total_chars: int,
+        target_intensity: float,
+        edit_ratio_in_band: bool,
+    ) -> Dict[str, object]:
+        """
+        Assemble the metadata dict for a successfully generated typo candidate.
+
+        The keys are split into two groups:
+          1. SHARED CONTRACT KEYS  - the same names the semantic word
+             substitution returns, so downstream code and the output CSV keep
+             a consistent schema. For a typo the "word" fields do not apply, so
+             they are filled with honest, neutral values (0 / NaN / empty).
+          2. TYPO-SPECIFIC KEYS    - clearly named so nobody mistakes a
+             character measurement for a word-level one.
+        """
+        # Diagnostic: is the recorded cosine inside the 0.80-0.95 reference
+        # band? This is informational only for typos (it does not gate anything).
+        similarity_in_reference_band = (
+            TYPO_SIM_REFERENCE_MIN <= similarity <= TYPO_SIM_REFERENCE_MAX
+        )
+
+        return {
+            # ---- SHARED CONTRACT KEYS -------------------------------------
+            "original_text": original,
+            "perturbed_text": perturbed,
+
+            # Filled in by PerturbationEngine (e.g. "typo_medium").
+            "perturbation_level": None,
+
+            "target_intensity": target_intensity,
+
+            # For a typo we count characters, not words. We still populate the
+            # shared ratio key so the dataset-level stats keep working, and we
+            # define it as the character edit ratio.
+            "actual_ratio_all_words": actual_ratio,
+
+            # Word-substitution fields do not apply to a typo. Keep the keys
+            # (for a consistent schema) but fill them with neutral values.
+            "total_words": 0,
+            "eligible_words": 0,
+            "target_words": 0,
+            "words_changed": 0,
+            "failed_lookup_words": 0,
+            "diagnostic_stats": {},
+            "word_diagnostics": [],
+            "replacements": [],
+
+            # These similarity keys exist so the shared stats/logging code can
+            # read them. For a typo the meaningful similarity is the character
+            # TF-IDF cosine, so we mirror it here (mean == min == max, since a
+            # typo produces a single whole-text similarity, not per-word ones).
+            "similarity_score_mean": similarity,
+            "similarity_score_min": similarity,
+            "similarity_score_max": similarity,
+
+            "is_same_as_original": original == perturbed,
+
+            # For a typo, "in range" means the cosine is inside the 0.80-0.95
+            # reference band. Recorded as a diagnostic; it does NOT reject.
+            "similarity_in_range": similarity_in_reference_band,
+
+            # "perturbation_in_range" means the perturbation hit its own target,
+            # which for a typo is the character edit-ratio band.
+            "perturbation_in_range": edit_ratio_in_band,
+
+            # ---- TYPO-SPECIFIC KEYS (honestly named) ----------------------
+            "char_edit_ratio": actual_ratio,
+            "char_cosine_similarity": similarity,
+            "total_chars": total_chars,
+            "typo_operations": ", ".join(operations) if operations else "",
+        }
+
+    def _infeasible_result(
+        self,
+        text: str,
+        reason: str,
+        target_intensity: float,
+        total_chars: int = 0,
+    ) -> Dict[str, object]:
+        """
+        Result returned when no typo could be applied (empty text, no letters,
+        or no candidate ever changed the text). Mirrors the shared schema with
+        neutral values so downstream code does not need special-casing.
+        """
+        return {
+            # ---- SHARED CONTRACT KEYS -------------------------------------
+            "original_text": text,
+            "perturbed_text": text,
+            "perturbation_level": None,
+            "target_intensity": target_intensity,
+            "actual_ratio_all_words": 0.0,
+            "total_words": 0,
+            "eligible_words": 0,
+            "target_words": 0,
+            "words_changed": 0,
+            "failed_lookup_words": 0,
+            "diagnostic_stats": {},
+            "word_diagnostics": [],
+            "replacements": [],
+            "similarity_score_mean": np.nan,
+            "similarity_score_min": np.nan,
+            "similarity_score_max": np.nan,
+            "is_same_as_original": True,
+            "similarity_in_range": False,
+            "perturbation_in_range": False,
+            # ---- TYPO-SPECIFIC KEYS ---------------------------------------
+            "char_edit_ratio": 0.0,
+            "char_cosine_similarity": np.nan,
+            "total_chars": total_chars,
+            "typo_operations": "",
+            "feasibility_reason": reason,
+        }
+
+    # =========================================================================
+    # EDIT-RATIO HELPERS
+    # =========================================================================
+
+    @staticmethod
+    def _distance_to_band(
+        value: float,
+        lower: float,
+        upper: float,
+    ) -> float:
+        """How far a value is from the [lower, upper] band (0 if inside)."""
+        if value < lower:
+            return lower - value
+        if value > upper:
+            return value - upper
+        return 0.0
+
+    def _character_edit_ratio(
+        self,
+        original: str,
+        perturbed: str,
+    ) -> float:
+        """
+        Actual character edit ratio = Levenshtein distance / alphabetic-char count.
+
+        The denominator is the number of ALPHABETIC characters in the original
+        text, to stay consistent with how the target number of edits is chosen
+        in _generate_candidate (target_edits = round(alpha_count * intensity)).
+        Using total length here (including digits, spaces, punctuation) would
+        bias the measured ratio downward for texts with many non-letters and
+        make the target band harder to hit.
+
+        This is the HONEST measure of how much changed. We compute it against
+        the generated candidate rather than trusting the number of operations
+        we asked for, because operations like swap or insert can affect the
+        distance differently than a naive count would suggest.
+        """
+        if not original:
+            return 0.0
+
+        alpha_count = sum(1 for c in original if c.isalpha())
+        if alpha_count == 0:
+            return 0.0
+
+        return self._edit_distance(original, perturbed) / alpha_count
+
+    @staticmethod
+    def _edit_distance(original: str, perturbed: str) -> int:
+        """
+        Standard Levenshtein edit distance (minimum single-character
+        insertions, deletions, or substitutions to turn one string into the
+        other). Implemented with a simple two-row dynamic-programming table
+        so it is easy to read and needs no external library.
+        """
+        m = len(original)
+        n = len(perturbed)
+
+        if m == 0:
+            return n
+        if n == 0:
+            return m
+
+        previous_row = list(range(n + 1))
+
+        for i in range(1, m + 1):
+            current_row = [i]
+            for j in range(1, n + 1):
+                cost_insert = current_row[j - 1] + 1
+                cost_delete = previous_row[j] + 1
+                cost_substitute = previous_row[j - 1] + (
+                    original[i - 1] != perturbed[j - 1]
+                )
+                current_row.append(
+                    min(cost_insert, cost_delete, cost_substitute)
+                )
+            previous_row = current_row
+
+        return previous_row[n]
+
+    # =========================================================================
+    # CANDIDATE GENERATION
+    # =========================================================================
+
+    def _generate_candidate(
+        self,
+        text: str,
+        intensity: float,
+    ) -> Tuple[str, List[str]]:
+        """
+        Produce one typo'd version of the text.
+
+        We aim to edit roughly `intensity` fraction of the alphabetic
+        characters, choosing a random operation for each edit. The caller
+        checks the ACTUAL edit ratio afterwards, so this method only needs to
+        get close to the target.
+
+        Returns:
+            (candidate_text, list_of_operation_names)
+        """
+        chars = list(text)
+
+        alpha_indices = [i for i, c in enumerate(chars) if c.isalpha()]
+        alpha_count = len(alpha_indices)
+
+        if alpha_count == 0:
+            return text, []
+
+        # How many edits to aim for, based on the target fraction. At least 1.
+        target_edits = int(round(alpha_count * intensity))
+        target_edits = max(1, target_edits)
+
+        operations_used: List[str] = []
+        edits_done = 0
+
+        # Cap the inner loop so we can never spin forever on awkward strings.
+        max_inner_attempts = max(50, target_edits * 20)
+        inner_attempts = 0
+
+        while edits_done < target_edits and inner_attempts < max_inner_attempts:
+            inner_attempts += 1
+
+            # Recompute letter positions each time, because insert/delete
+            # change the length and shift positions.
+            alpha_indices = [i for i, c in enumerate(chars) if c.isalpha()]
+            if not alpha_indices:
+                break
+
+            # If only one edit remains, avoid "swap" because a swap can count
+            # as two edits and overshoot the target.
+            if target_edits - edits_done == 1:
+                operation = self._rng.choice(
+                    ["substitution", "delete", "insert"]
+                )
+            else:
+                operation = self._rng.choice(
+                    ["substitution", "delete", "insert", "swap"]
+                )
+
+            if operation == "substitution":
+                idx = self._rng.choice(alpha_indices)
+                original_char = chars[idx]
+                neighbors = self.keyboard_neighbors.get(
+                    original_char.lower()
+                )
+                if not neighbors:
+                    continue
+                new_char = self._rng.choice(neighbors)
+                # Preserve upper/lower case of the original character.
+                chars[idx] = (
+                    new_char.upper()
+                    if original_char.isupper()
+                    else new_char
+                )
+                edits_done += 1
+                operations_used.append("substitution")
+
+            elif operation == "delete":
+                if len(chars) <= 1:
+                    continue
+                idx = self._rng.choice(alpha_indices)
+                del chars[idx]
+                edits_done += 1
+                operations_used.append("delete")
+
+            elif operation == "insert":
+                idx = self._rng.choice(alpha_indices)
+                original_char = chars[idx]
+                neighbors = self.keyboard_neighbors.get(
+                    original_char.lower()
+                )
+                if not neighbors:
+                    continue
+                new_char = self._rng.choice(neighbors)
+                chars.insert(idx + 1, new_char)
+                edits_done += 1
+                operations_used.append("insert")
+
+            elif operation == "swap":
+                # Find a position where two adjacent characters are both
+                # letters, then swap them.
+                swappable = [
+                    i
+                    for i in range(len(chars) - 1)
+                    if chars[i].isalpha() and chars[i + 1].isalpha()
+                ]
+                if not swappable:
+                    continue
+                idx = self._rng.choice(swappable)
+                chars[idx], chars[idx + 1] = chars[idx + 1], chars[idx]
+                edits_done += 1
+                operations_used.append("swap")
+
+        return "".join(chars), operations_used
 
 
 # =============================================================================
@@ -2328,13 +2631,19 @@ class PerturbationEngine:
     """
     Main perturbation engine.
 
-    Same method:
-        semantic word substitution
+    Two independent perturbation methods live here:
 
-    Different intensity:
-        low    = 10%
-        medium = 20%
-        high   = 30%
+      1. Semantic word substitution (levels: low / medium / high)
+         Swaps whole words for thesaurus synonyms, filtered by IndoBERT
+         contextual similarity. Intensity = fraction of WORDS changed
+         (10% / 20% / 30%).
+
+      2. Character typo perturbation (levels: typo_low / typo_medium / typo_high)
+         Introduces keyboard-style character typos. Intensity = fraction of
+         CHARACTERS edited (10% / 30% / 50%).
+
+    The two methods use DISTINCT level names, so a given level always maps to
+    exactly one method and one intensity. There is no overloading.
     """
 
     def __init__(
@@ -2359,12 +2668,18 @@ class PerturbationEngine:
             )
         )
 
+        # Character typo perturbation (levels: typo_low / typo_medium / typo_high).
+        # It is fully independent of the semantic word substitution above.
+        self.typo_perturbation = TypoCharacterPerturbation(
+            random_seed=random_seed,
+        )
+
         logger.info(
             "PerturbationEngine initialized"
         )
 
         logger.info(
-            "Method: semantic similarity-based "
+            "Method 1: semantic similarity-based "
             "word substitution"
         )
 
@@ -2379,6 +2694,17 @@ class PerturbationEngine:
             "Word cosine similarity range: %.2f-%.2f",
             sim_min,
             sim_max,
+        )
+
+        logger.info(
+            "Method 2: character typo perturbation"
+        )
+
+        logger.info(
+            "typo_low=%.0f%%, typo_medium=%.0f%%, typo_high=%.0f%% of characters",
+            TYPO_INTENSITIES["typo_low"] * 100,
+            TYPO_INTENSITIES["typo_medium"] * 100,
+            TYPO_INTENSITIES["typo_high"] * 100,
         )
 
     # =========================================================================
@@ -2409,30 +2735,36 @@ class PerturbationEngine:
 
         level = level.lower().strip()
 
-        if level not in PERTURBATION_INTENSITIES:
-            raise ValueError(
-                f"Invalid perturbation level: {level}. "
-                "Choose low, medium, or high."
-            )
+        # -----------------------------------------------------------------
+        # Route to the correct method based on the level name.
+        #   low / medium / high            -> semantic word substitution
+        #   typo_low / typo_medium / typo_high -> character typo perturbation
+        # -----------------------------------------------------------------
+        if level in PERTURBATION_INTENSITIES:
+            if intensity is None:
+                intensity = PERTURBATION_INTENSITIES[level]
 
-        if intensity is None:
-            intensity = (
-                PERTURBATION_INTENSITIES[
-                    level
-                ]
-            )
-
-        result = (
-            self.perturbation
-            .perturb_with_metadata(
+            result = self.perturbation.perturb_with_metadata(
                 text=text,
                 intensity=intensity,
             )
-        )
 
-        result[
-            "perturbation_level"
-        ] = level
+        elif level in TYPO_INTENSITIES:
+            if intensity is None:
+                intensity = TYPO_INTENSITIES[level]
+
+            result = self.typo_perturbation.perturb_with_metadata(
+                text=text,
+                intensity=intensity,
+            )
+
+        else:
+            raise ValueError(
+                f"Invalid perturbation level: {level}. Choose one of: "
+                f"{list(PERTURBATION_INTENSITIES) + list(TYPO_INTENSITIES)}."
+            )
+
+        result["perturbation_level"] = level
 
         return result
 
@@ -2457,9 +2789,14 @@ class PerturbationEngine:
 
         level = level.lower().strip()
 
-        if level not in PERTURBATION_INTENSITIES:
+        # Accept both the semantic-substitution levels and the typo levels.
+        if (
+            level not in PERTURBATION_INTENSITIES
+            and level not in TYPO_INTENSITIES
+        ):
             raise ValueError(
-                f"Invalid level: {level}"
+                f"Invalid level: {level}. Choose one of: "
+                f"{list(PERTURBATION_INTENSITIES) + list(TYPO_INTENSITIES)}."
             )
 
         logger.info(
@@ -2499,11 +2836,32 @@ class PerturbationEngine:
 
         result_df = pd.DataFrame(results)
 
-        result_df["perturbation_success"] = (
-            (~result_df["is_same_as_original"])
-            & result_df["similarity_in_range"]
-            & result_df["perturbation_in_range"]
-        )
+        # -----------------------------------------------------------------
+        # Define what counts as a SUCCESSFUL perturbation.
+        #
+        # The two methods have different success criteria, so we branch
+        # explicitly rather than hiding the difference in one expression:
+        #
+        #   Semantic word substitution:
+        #       changed AND word-similarity in [0.80, 0.95] AND hit word target
+        #       (here cosine similarity IS a gate).
+        #
+        #   Typo perturbation:
+        #       changed AND actual character edit ratio hit its target band.
+        #       Cosine similarity is recorded as a diagnostic only, so it is
+        #       intentionally NOT part of the success test.
+        # -----------------------------------------------------------------
+        if level in TYPO_INTENSITIES:
+            result_df["perturbation_success"] = (
+                (~result_df["is_same_as_original"])
+                & result_df["perturbation_in_range"]
+            )
+        else:
+            result_df["perturbation_success"] = (
+                (~result_df["is_same_as_original"])
+                & result_df["similarity_in_range"]
+                & result_df["perturbation_in_range"]
+            )
 
         successful_count = int(
             result_df["perturbation_success"].sum()
@@ -2521,12 +2879,8 @@ class PerturbationEngine:
             "original_text",
             "perturbed_text",
             "perturbation_level",
-            "perturbation_rule",
             "target_intensity",
 
-            "direct_lookup_words",
-            "reverse_parent_lookup_words",
-            "stemmed_lookup_words",
             "failed_lookup_words",
 
             "total_words",
@@ -2535,11 +2889,10 @@ class PerturbationEngine:
             "words_changed",
 
             "actual_ratio_all_words",
-            "actual_ratio_eligible_words",
 
-            "word_cosine_similarity_mean",
-            "word_cosine_similarity_min",
-            "word_cosine_similarity_max",
+            "similarity_score_mean",
+            "similarity_score_min",
+            "similarity_score_max",
 
             "is_same_as_original",
             "similarity_in_range",
@@ -2550,6 +2903,13 @@ class PerturbationEngine:
             "word_diagnostics",
 
             "replacements",
+
+            # Typo-specific columns (only present on typo_* runs; guarded below
+            # so semantic runs simply skip them).
+            "char_edit_ratio",
+            "char_cosine_similarity",
+            "total_chars",
+            "typo_operations",
         ]
 
         for column in metadata_columns:
@@ -2568,12 +2928,8 @@ class PerturbationEngine:
             & ~result_df["is_same_as_original"]
         )
 
-        successful_count = int(
-            successful.sum()
-        )
-
+        successful_count = int(successful.sum())
         total_count = len(result_df)
-
         success_percentage = (
             successful_count / total_count * 100
             if total_count
@@ -2583,68 +2939,28 @@ class PerturbationEngine:
         # -------------------------------------------------------------------------
         # DATASET-LEVEL PERTURBATION STATISTICS
         # -------------------------------------------------------------------------
-        # MOVE
+
         perturbation_stats = {
-            "total_samples": total_count,
-            "successful_samples": successful_count,
-            "changed_samples": int(
-                (
-                    ~result_df["is_same_as_original"]
-                ).sum()
-            ),
-
-            "sample_change_rate": float(
-                (
-                    ~result_df["is_same_as_original"]
-                ).mean()
-            ) if total_count else 0.0,
-
             "mean_word_change_rate": float(
-                result_df[
-                    "actual_ratio_all_words"
-                ].mean()
+                result_df["actual_ratio_all_words"].mean()
             ) if total_count else 0.0,
 
-            "median_word_change_rate": float(
-                result_df[
-                    "actual_ratio_all_words"
-                ].median()
-            ) if total_count else 0.0,
-
-            "mean_eligible_word_change_rate": float(
-                result_df[
-                    "actual_ratio_eligible_words"
-                ].mean()
-            ) if total_count else 0.0,
-
-            "mean_word_cosine_similarity": float(
-                result_df[
-                    "word_cosine_similarity_mean"
-                ].dropna().mean()
+            "mean_similarity_score": float(
+                result_df["similarity_score_mean"].dropna().mean()
             )
-            if result_df[
-                "word_cosine_similarity_mean"
-            ].notna().any()
+            if result_df["similarity_score_mean"].notna().any()
             else None,
 
-            "min_word_cosine_similarity": float(
-                result_df[
-                    "word_cosine_similarity_min"
-                ].dropna().min()
+            "min_similarity_score": float(
+                result_df["similarity_score_min"].dropna().min()
             )
-            if result_df[
-                "word_cosine_similarity_min"
-            ].notna().any()
+            if result_df["similarity_score_min"].notna().any()
             else None,
 
-            "max_word_cosine_similarity": float(
-                result_df[
-                    "word_cosine_similarity_max"
-                ].dropna().max()
+            "max_similarity_score": float(
+                result_df["similarity_score_max"].dropna().max()
             )
-            if result_df[
-                "word_cosine_similarity_max"
-            ].notna().any()
+            if result_df["similarity_score_max"].notna().any()
             else None,
         }
 
@@ -2691,18 +3007,10 @@ class PerturbationEngine:
         )
 
         logger.info(
-            "%s actual ratio over eligible words: %.4f",
+            "%s mean similarity score: %.4f",
             level.upper(),
             result_df[
-                "actual_ratio_eligible_words"
-            ].mean(),
-        )
-
-        logger.info(
-            "%s mean word cosine similarity: %.4f",
-            level.upper(),
-            result_df[
-                "word_cosine_similarity_mean"
+                "similarity_score_mean"
             ].mean(),
         )
 

@@ -67,40 +67,6 @@ class FileManager:
             return json.load(f)
     
     @staticmethod
-    def save_pickle(data: Any, filepath: str) -> None:
-        """
-        Save object to pickle file.
-        
-        Args:
-            data: Object to save
-            filepath: Path to output file
-        """
-        FileManager.ensure_directory(os.path.dirname(filepath))
-        
-        with open(filepath, 'wb') as f:
-            pickle.dump(data, f)
-    
-    @staticmethod
-    def load_pickle(filepath: str) -> Any:
-        """
-        Load object from pickle file.
-        
-        Args:
-            filepath: Path to pickle file
-            
-        Returns:
-            Loaded object
-            
-        Raises:
-            FileNotFoundError: If file doesn't exist
-        """
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"File not found: {filepath}")
-        
-        with open(filepath, 'rb') as f:
-            return pickle.load(f)
-    
-    @staticmethod
     def save_csv(df: pd.DataFrame, filepath: str, index: bool = False) -> None:
         """
         Save DataFrame to CSV file.
@@ -179,50 +145,6 @@ class FileManager:
         """
         return os.path.exists(filepath)
     
-    @staticmethod
-    def get_file_size(filepath: str) -> int:
-        """
-        Get file size in bytes.
-        
-        Args:
-            filepath: Path to file
-            
-        Returns:
-            File size in bytes
-            
-        Raises:
-            FileNotFoundError: If file doesn't exist
-        """
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"File not found: {filepath}")
-        
-        return os.path.getsize(filepath)
-    
-    @staticmethod
-    def list_files(directory: str, extension: Optional[str] = None) -> List[str]:
-        """
-        List files in directory.
-        
-        Args:
-            directory: Path to directory
-            extension: Optional file extension filter (e.g., '.json')
-            
-        Returns:
-            List of file paths
-        """
-        if not os.path.exists(directory):
-            return []
-        
-        files = []
-        for filename in os.listdir(directory):
-            filepath = os.path.join(directory, filename)
-            if os.path.isfile(filepath):
-                if extension is None or filename.endswith(extension):
-                    files.append(filepath)
-        
-        return sorted(files)
-
-
 class LoggerManager:
     """Manages logging configuration and logger instances."""
     
@@ -278,23 +200,6 @@ class LoggerManager:
         
         return logger
     
-    @staticmethod
-    def get_logger(name: str) -> logging.Logger:
-        """
-        Get existing logger or create new one.
-        
-        Args:
-            name: Logger name
-            
-        Returns:
-            Logger instance
-        """
-        if name not in LoggerManager._loggers:
-            return LoggerManager.setup_logger(name)
-        
-        return LoggerManager._loggers[name]
-
-
 class ReproducibilityHelper:
     """Ensures reproducibility across the system."""
     
@@ -320,53 +225,6 @@ class ReproducibilityHelper:
         except ImportError:
             pass
     
-    @staticmethod
-    def get_random_state() -> Dict[str, Any]:
-        """
-        Get current random state for all libraries.
-        
-        Returns:
-            Dictionary with random states
-        """
-        state = {
-            'python': random.getstate(),
-            'numpy': np.random.get_state()
-        }
-        
-        try:
-            import torch
-            state['torch'] = torch.get_rng_state()
-            if torch.cuda.is_available():
-                state['torch_cuda'] = torch.cuda.get_rng_state_all()
-        except ImportError:
-            pass
-        
-        return state
-    
-    @staticmethod
-    def set_random_state(state: Dict[str, Any]) -> None:
-        """
-        Restore random state for all libraries.
-        
-        Args:
-            state: Dictionary with random states
-        """
-        if 'python' in state:
-            random.setstate(state['python'])
-        
-        if 'numpy' in state:
-            np.random.set_state(state['numpy'])
-        
-        try:
-            import torch
-            if 'torch' in state:
-                torch.set_rng_state(state['torch'])
-            if 'torch_cuda' in state and torch.cuda.is_available():
-                torch.cuda.set_rng_state_all(state['torch_cuda'])
-        except ImportError:
-            pass
-
-
 class Timer:
     """Simple timer for performance measurement."""
     
@@ -416,201 +274,12 @@ class Timer:
 class DataValidator:
     """Validates data integrity and quality."""
     
-    @staticmethod
-    def validate_dataframe(
-        df: pd.DataFrame,
-        required_columns: List[str],
-        allow_null: bool = False
-    ) -> bool:
-        """
-        Validate DataFrame structure and content.
-        
-        Args:
-            df: DataFrame to validate
-            required_columns: List of required column names
-            allow_null: Whether to allow null values
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        # Check required columns
-        missing_columns = set(required_columns) - set(df.columns)
-        if missing_columns:
-            return False
-        
-        # Check for null values
-        if not allow_null:
-            if df[required_columns].isnull().any().any():
-                return False
-        
-        return True
-    
-    @staticmethod
-    def validate_labels(labels: np.ndarray, num_classes: int = 2) -> bool:
-        """
-        Validate label array.
-        
-        Args:
-            labels: Array of labels
-            num_classes: Expected number of classes
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        unique_labels = np.unique(labels)
-        
-        # Check if labels are in valid range
-        if not all(0 <= label < num_classes for label in unique_labels):
-            return False
-        
-        return True
-    
-    @staticmethod
-    def check_data_balance(labels: np.ndarray, threshold: float = 0.3) -> bool:
-        """
-        Check if data is reasonably balanced.
-        
-        Args:
-            labels: Array of labels
-            threshold: Maximum acceptable deviation from 50-50 split
-            
-        Returns:
-            True if balanced within threshold, False otherwise
-        """
-        label_ratio = np.mean(labels)
-        deviation = abs(label_ratio - 0.5)
-        
-        return deviation <= threshold
-
-
 class HashHelper:
     """Provides hashing utilities for data integrity."""
     
-    @staticmethod
-    def hash_string(text: str, algorithm: str = 'sha256') -> str:
-        """
-        Generate hash of string.
-        
-        Args:
-            text: Text to hash
-            algorithm: Hash algorithm ('md5', 'sha256', etc.)
-            
-        Returns:
-            Hexadecimal hash string
-        """
-        hash_obj = hashlib.new(algorithm)
-        hash_obj.update(text.encode('utf-8'))
-        return hash_obj.hexdigest()
-    
-    @staticmethod
-    def hash_file(filepath: str, algorithm: str = 'sha256') -> str:
-        """
-        Generate hash of file contents.
-        
-        Args:
-            filepath: Path to file
-            algorithm: Hash algorithm
-            
-        Returns:
-            Hexadecimal hash string
-            
-        Raises:
-            FileNotFoundError: If file doesn't exist
-        """
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"File not found: {filepath}")
-        
-        hash_obj = hashlib.new(algorithm)
-        
-        with open(filepath, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b''):
-                hash_obj.update(chunk)
-        
-        return hash_obj.hexdigest()
-    
-    @staticmethod
-    def hash_dataframe(df: pd.DataFrame, algorithm: str = 'sha256') -> str:
-        """
-        Generate hash of DataFrame contents.
-        
-        Args:
-            df: DataFrame to hash
-            algorithm: Hash algorithm
-            
-        Returns:
-            Hexadecimal hash string
-        """
-        hash_obj = hashlib.new(algorithm)
-        hash_obj.update(pd.util.hash_pandas_object(df, index=True).values)
-        return hash_obj.hexdigest()
-
-
 class MetricsFormatter:
     """Formats metrics for display and export."""
     
-    @staticmethod
-    def format_metrics(
-        metrics: Dict[str, float],
-        precision: int = 4
-    ) -> Dict[str, str]:
-        """
-        Format metrics dictionary for display.
-        
-        Args:
-            metrics: Dictionary of metric values
-            precision: Number of decimal places
-            
-        Returns:
-            Dictionary with formatted metric strings
-        """
-        formatted = {}
-        
-        for key, value in metrics.items():
-            if isinstance(value, (int, float)):
-                formatted[key] = f"{value:.{precision}f}"
-            else:
-                formatted[key] = str(value)
-        
-        return formatted
-    
-    @staticmethod
-    def metrics_to_table(
-        metrics_dict: Dict[str, Dict[str, float]],
-        row_names: Optional[List[str]] = None
-    ) -> pd.DataFrame:
-        """
-        Convert metrics dictionary to DataFrame table.
-        
-        Args:
-            metrics_dict: Dictionary mapping names to metric dictionaries
-            row_names: Optional custom row names
-            
-        Returns:
-            DataFrame with metrics as table
-        """
-        if row_names is None:
-            row_names = list(metrics_dict.keys())
-        
-        df = pd.DataFrame(metrics_dict).T
-        df.index = row_names
-        
-        return df
-    
-    @staticmethod
-    def format_percentage(value: float, precision: int = 2) -> str:
-        """
-        Format value as percentage.
-        
-        Args:
-            value: Value to format (0-1 range)
-            precision: Number of decimal places
-            
-        Returns:
-            Formatted percentage string
-        """
-        return f"{value * 100:.{precision}f}%"
-
-
 class ProgressTracker:
     """Tracks progress of long-running operations."""
     
@@ -648,22 +317,6 @@ class ProgressTracker:
         
         return (self.current / self.total) * 100
     
-    def get_eta(self) -> Optional[float]:
-        """
-        Get estimated time to completion.
-        
-        Returns:
-            Estimated seconds remaining, or None if not enough data
-        """
-        if self.current == 0:
-            return None
-        
-        elapsed = (datetime.now() - self.start_time).total_seconds()
-        rate = self.current / elapsed
-        remaining = self.total - self.current
-        
-        return remaining / rate if rate > 0 else None
-    
     def __str__(self) -> str:
         """String representation of progress."""
         progress = self.get_progress()
@@ -700,39 +353,6 @@ class ConfigValidator:
         
         return True
     
-    @staticmethod
-    def validate_positive(value: float, name: str) -> bool:
-        """
-        Validate value is positive.
-        
-        Args:
-            value: Value to validate
-            name: Parameter name for error messages
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        if value <= 0:
-            logging.warning(f"{name} must be positive, got {value}")
-            return False
-        
-        return True
-    
-    @staticmethod
-    def validate_probability(value: float, name: str) -> bool:
-        """
-        Validate value is a valid probability (0-1).
-        
-        Args:
-            value: Value to validate
-            name: Parameter name for error messages
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        return ConfigValidator.validate_range(value, 0.0, 1.0, name)
-
-
 def get_timestamp(format_string: str = "%Y%m%d_%H%M%S") -> str:
     """
     Get current timestamp as formatted string.

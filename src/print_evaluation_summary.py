@@ -12,7 +12,15 @@ Usage:
 Expected keys in `results`:
     - in_domain:       {domain: {metrics: {accuracy, f1, precision, recall, mcc, roc_auc, confusion_matrix}}}
     - cross_domain:    {"Src->Tgt": {metrics: {...}, domain_shift: {sd_f1, td_f1, ...}}}
-    - perturbation:    {domain: {clean: {metrics}, low: {metrics}, medium: {metrics}, high: {metrics}}}
+    - perturbation:    {domain: {
+                            clean:    {metrics},
+                            semantic: {low: {metrics}, medium: {metrics}, high: {metrics}},
+                            typo:     {low: {metrics}, medium: {metrics}, high: {metrics}},
+                        }}
+
+      The two perturbation mechanisms ('semantic' = synonym substitution,
+      'typo' = character typos) share the SAME clean baseline, so 'clean' lives
+      once at the top of each domain rather than under each type.
 """
 
 import json
@@ -45,7 +53,18 @@ METRIC_LABELS = {
     "mcc": "MCC",
     "roc_auc": "ROC-AUC",
 }
-PERTURB_LEVELS = ["clean", "low", "medium", "high"]
+# The two perturbation mechanisms and their three intensity levels.
+# 'clean' is the shared, unperturbed baseline (shown alongside both mechanisms).
+PERTURB_TYPES = ["semantic", "typo"]
+PERTURB_LEVELS = ["low", "medium", "high"]
+# The full ordered sequence used when a chart/table shows clean -> increasing noise.
+PERTURB_SEQUENCE = ["clean", "low", "medium", "high"]
+
+# Human-readable labels for the perturbation types (used in titles/headers).
+PERTURB_TYPE_LABELS = {
+    "semantic": "Semantic (synonym substitution)",
+    "typo": "Typo (character noise)",
+}
 SEP_THICK = "═" * 80
 SEP_THIN  = "─" * 80
 SEP_MID   = "·" * 80
@@ -88,6 +107,42 @@ def _safe_get(d: dict, *keys, default=0.0):
             return default
         d = d.get(k, {})
     return _v(d) if d != {} else default
+
+
+def _clean_metric(perturbation: dict, in_domain: dict, domain: str,
+                  metric: str = "macro_f1") -> float:
+    """
+    Return the shared CLEAN-baseline metric for one domain.
+
+    The clean condition is stored once at perturbation[domain]['clean'], but for
+    robustness it also falls back to the in-domain result (they are the same
+    unperturbed evaluation).
+    """
+    clean = (
+        perturbation.get(domain, {})
+        .get("clean", {})
+        .get("metrics", {})
+        .get(metric)
+    )
+    if clean is None:
+        clean = in_domain.get(domain, {}).get("metrics", {}).get(metric, 0)
+    return _v(clean)
+
+
+def _pert_metric(perturbation: dict, domain: str, ptype: str, level: str,
+                 metric: str = "macro_f1") -> float:
+    """
+    Return one perturbed metric from the nested structure:
+        perturbation[domain][ptype][level]['metrics'][metric]
+    Missing entries return 0.0 so tables/plots never crash on partial results.
+    """
+    return _v(
+        perturbation.get(domain, {})
+        .get(ptype, {})
+        .get(level, {})
+        .get("metrics", {})
+        .get(metric, 0)
+    )
 
 
 def load_results(results_dir: str) -> dict:
@@ -159,7 +214,8 @@ def _print_cross_domain_matrix(cross_domain: dict, metric: str = "macro_f1") -> 
 
     col_w = 12
     short = [d[:9] for d in DOMAINS]
-    print(f"{'Source \\ Target':<16}" + "".join(f"{s:>{col_w}}" for s in short))
+    header_label = 'Source \\ Target'
+    print(f"{header_label:<16}" + "".join(f"{s:>{col_w}}" for s in short))
     print(SEP_THIN)
 
     for src in DOMAINS:
@@ -319,76 +375,81 @@ def _print_cross_domain_full(cross_domain: dict) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _print_perturbation(perturbation: dict, in_domain: dict) -> None:
-    _section(5, "PERTURBATION ROBUSTNESS  (F1-Score across noise levels)")
+    _section(5, "PERTURBATION ROBUSTNESS  (Macro-F1 across noise levels)")
 
     col_w = 10
-    print(f"  {'Domain':<14}", end="")
-    for lvl in PERTURB_LEVELS:
-        print(f"  {lvl.capitalize():>{col_w}}", end="")
-    print(f"  {'Drop(hi-cl)':>{col_w}}  {'Δ%':>7}")
-    print("  " + SEP_THIN)
 
-    all_drops = []
-    for dom in DOMAINS:
-        pdom = perturbation.get(dom, {})
-        # 'clean' comes from in_domain if not directly in perturbation
-        clean_f1 = _v(
-            pdom.get("clean", {}).get("metrics", {}).get("macro_f1")
-            or in_domain.get(dom, {}).get("metrics", {}).get("macro_f1", 0)
-        )
-        row_vals = {"clean": clean_f1}
-        for lvl in ["low", "medium", "high"]:
-            row_vals[lvl] = _v(pdom.get(lvl, {}).get("metrics", {}).get("macro_f1", 0))
+    # One summary table PER perturbation type. Each shows the shared Clean
+    # baseline followed by that type's Low / Medium / High, plus the drop
+    # from Clean to High so the intensity trend is easy to read.
+    for ptype in PERTURB_TYPES:
+        print(f"\n  === {PERTURB_TYPE_LABELS[ptype]} ===")
+        print(f"  {'Domain':<14}", end="")
+        for lvl in PERTURB_SEQUENCE:
+            print(f"  {lvl.capitalize():>{col_w}}", end="")
+        print(f"  {'Drop(hi-cl)':>{col_w}}  {'Δ%':>7}")
+        print("  " + SEP_THIN)
 
-        high_f1 = row_vals["high"]
-        drop = clean_f1 - high_f1
-        drop_pct = (drop / clean_f1 * 100) if clean_f1 > 0 else 0.0
-        all_drops.append(drop)
+        all_drops = []
+        for dom in DOMAINS:
+            clean_f1 = _clean_metric(perturbation, in_domain, dom, "macro_f1")
+            row_vals = {"clean": clean_f1}
+            for lvl in PERTURB_LEVELS:
+                row_vals[lvl] = _pert_metric(perturbation, dom, ptype, lvl, "macro_f1")
 
-        print(f"  {dom:<14}", end="")
-        for lvl in PERTURB_LEVELS:
-            print(f"  {row_vals[lvl]:>{col_w}.4f}", end="")
-        drop_marker = "▼" if drop > 0.05 else ("▲" if drop < -0.01 else "≈")
-        print(f"  {drop:>+{col_w}.4f}  {drop_pct:>+6.1f}% {drop_marker}")
+            drop = clean_f1 - row_vals["high"]
+            drop_pct = (drop / clean_f1 * 100) if clean_f1 > 0 else 0.0
+            all_drops.append(drop)
 
-    print("  " + SEP_THIN)
-    # mean row
-    print(f"  {'  MEAN':<14}", end="")
-    for lvl in PERTURB_LEVELS:
-        if lvl == "clean":
-            vals = [
-                _v(
-                    perturbation.get(d, {}).get("clean", {}).get("metrics", {}).get("macro_f1")
-                    or in_domain.get(d, {}).get("metrics", {}).get("macro_f1", 0)
-                )
-                for d in DOMAINS
-            ]
-        else:
-            vals = [
-                _v(perturbation.get(d, {}).get(lvl, {}).get("metrics", {}).get("macro_f1", 0))
-                for d in DOMAINS
-            ]
-        print(f"  {np.mean(vals):>{col_w}.4f}", end="")
-    print(f"  {np.mean(all_drops):>+{col_w}.4f}")
+            print(f"  {dom:<14}", end="")
+            for lvl in PERTURB_SEQUENCE:
+                print(f"  {row_vals[lvl]:>{col_w}.4f}", end="")
+            drop_marker = "▼" if drop > 0.05 else ("▲" if drop < -0.01 else "≈")
+            print(f"  {drop:>+{col_w}.4f}  {drop_pct:>+6.1f}% {drop_marker}")
 
-    # Perturbation full metrics per domain
+        # Mean row across domains.
+        print("  " + SEP_THIN)
+        print(f"  {'  MEAN':<14}", end="")
+        for lvl in PERTURB_SEQUENCE:
+            if lvl == "clean":
+                vals = [
+                    _clean_metric(perturbation, in_domain, d, "macro_f1")
+                    for d in DOMAINS
+                ]
+            else:
+                vals = [
+                    _pert_metric(perturbation, d, ptype, lvl, "macro_f1")
+                    for d in DOMAINS
+                ]
+            print(f"  {np.mean(vals):>{col_w}.4f}", end="")
+        print(f"  {np.mean(all_drops):>+{col_w}.4f}")
+
+    # Per-domain, all-metrics breakdown, still grouped by perturbation type.
     print(f"\n  Perturbation — All Metrics per Domain:\n")
+    metric_cols = ["accuracy", "macro_f1", "macro_precision", "macro_recall"]
     for dom in DOMAINS:
-        pdom = perturbation.get(dom, {})
         clean_mets = in_domain.get(dom, {}).get("metrics", {})
         print(f"  [{dom}]")
-        print(f"  {'Level':<10}", end="")
-        for m in ["accuracy","macro_f1","macro_precision","macro_recall"]:
-            print(f"  {METRIC_LABELS[m]:>{col_w}}", end="")
-        print()
-        for lvl in PERTURB_LEVELS:
-            if lvl == "clean":
-                mets = clean_mets
-            else:
-                mets = pdom.get(lvl, {}).get("metrics", {})
-            print(f"  {lvl.capitalize():<10}", end="")
-            for m in ["accuracy","macro_f1","macro_precision","macro_recall"]:
-                print(f"  {_v(mets.get(m, 0)):>{col_w}.4f}", end="")
+        for ptype in PERTURB_TYPES:
+            print(f"    {PERTURB_TYPE_LABELS[ptype]}")
+            print(f"    {'Level':<10}", end="")
+            for m in metric_cols:
+                print(f"  {METRIC_LABELS[m]:>{col_w}}", end="")
+            print()
+            for lvl in PERTURB_SEQUENCE:
+                if lvl == "clean":
+                    mets = clean_mets
+                else:
+                    mets = (
+                        perturbation.get(dom, {})
+                        .get(ptype, {})
+                        .get(lvl, {})
+                        .get("metrics", {})
+                    )
+                print(f"    {lvl.capitalize():<10}", end="")
+                for m in metric_cols:
+                    print(f"  {_v(mets.get(m, 0)):>{col_w}.4f}", end="")
+                print()
             print()
         print()
 
@@ -452,15 +513,6 @@ def _print_global_summary(in_domain: dict, cross_domain: dict, perturbation: dic
                            model_name: str) -> None:
     _section(8, f"GLOBAL SUMMARY — {model_name.upper()} MODEL")
 
-    def _mean_metric(source_dict, pair_filter, metric):
-        vals = []
-        for k, v in source_dict.items():
-            if not pair_filter(k):
-                continue
-            val = _v(v.get("metrics", {}).get(metric, 0))
-            vals.append(val)
-        return np.mean(vals) if vals else 0.0
-
     # In-domain averages
     print(f"\n  ── In-Domain (Specialist on Own Data) ──")
     for m in ["accuracy","macro_f1","macro_precision","macro_recall","mcc"]:
@@ -482,18 +534,21 @@ def _print_global_summary(in_domain: dict, cross_domain: dict, perturbation: dic
         mean = np.mean(vals) if vals else 0.0
         print(f"    {lbl:<14}: {mean:.4f}  {_bar(mean, 24)}")
 
-    # Perturbation summary
-    print(f"\n  ── Perturbation (avg F1 across domains) ──")
-    for lvl in PERTURB_LEVELS:
-        if lvl == "clean":
-            vals = [_v(in_domain.get(d, {}).get("metrics", {}).get("macro_f1", 0)) for d in DOMAINS]
-        else:
+    # Perturbation summary — one block per mechanism, sharing the clean baseline.
+    clean_mean = np.mean([
+        _clean_metric(perturbation, in_domain, d, "macro_f1") for d in DOMAINS
+    ]) if DOMAINS else 0.0
+    print(f"\n  ── Perturbation (avg Macro-F1 across domains) ──")
+    print(f"    {'Clean':<14}: {clean_mean:.4f}  {_bar(clean_mean, 24)}")
+    for ptype in PERTURB_TYPES:
+        print(f"    [{ptype}]")
+        for lvl in PERTURB_LEVELS:
             vals = [
-                _v(perturbation.get(d, {}).get(lvl, {}).get("metrics", {}).get("macro_f1", 0))
+                _pert_metric(perturbation, d, ptype, lvl, "macro_f1")
                 for d in DOMAINS
             ]
-        mean = np.mean(vals) if vals else 0.0
-        print(f"    {lvl.capitalize():<14}: {mean:.4f}  {_bar(mean, 24)}")
+            mean = np.mean(vals) if vals else 0.0
+            print(f"      {lvl.capitalize():<12}: {mean:.4f}  {_bar(mean, 24)}")
 
     # Domain shift aggregates
     print(f"\n  ── Domain Shift (mean F1 delta) ──")
@@ -520,69 +575,70 @@ def _print_global_summary(in_domain: dict, cross_domain: dict, perturbation: dic
 def _plot_perturbation_curves(perturbation: dict,
                               in_domain: dict,
                               output_dir: str = "."):
-    
-    levels = ["Clean", "Low", "Medium", "High"]
-    x_base = np.array([0, 1, 2, 3])
+    """
+    Per-domain robustness curves, drawn as TWO side-by-side subplots:
+    one for the semantic mechanism and one for the typo mechanism.
 
-    # 1. Increase figure size for better horizontal breathing room
-    plt.figure(figsize=(10, 6)) 
-    
-    # 3. Calculate a slight x-offset for each domain to prevent point overlap
+    Each subplot shows the 5 domain lines across Clean -> Low -> Medium -> High.
+    The Clean point is the shared unperturbed baseline, so it appears in both
+    subplots for reference. The two subplots share the same y-axis so the
+    intensity trend within each mechanism is easy to read, without implying the
+    two mechanisms are directly comparable point-for-point.
+    """
+    x_labels = [lvl.capitalize() for lvl in PERTURB_SEQUENCE]  # Clean/Low/Medium/High
+    x_base = np.arange(len(PERTURB_SEQUENCE))                   # [0,1,2,3]
+
+    # Small horizontal offset per domain so overlapping points stay readable.
     offsets = np.linspace(-0.06, 0.06, len(DOMAINS))
 
-    for idx, dom in enumerate(DOMAINS):
-        clean = _v(
-            perturbation.get(dom, {})
-            .get("clean", {})
-            .get("metrics", {})
-            .get("f1")
-            or in_domain.get(dom, {})
-            .get("metrics", {})
-            .get("macro_f1", 0)
-        )
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-        values = [
-            clean,
-            _v(perturbation.get(dom, {}).get("low", {}).get("metrics", {}).get("macro_f1", 0)),
-            _v(perturbation.get(dom, {}).get("medium", {}).get("metrics", {}).get("macro_f1", 0)),
-            _v(perturbation.get(dom, {}).get("high", {}).get("metrics", {}).get("macro_f1", 0))
-        ]
+    for ax, ptype in zip(axes, PERTURB_TYPES):
+        for idx, dom in enumerate(DOMAINS):
+            clean = _clean_metric(perturbation, in_domain, dom, "macro_f1")
+            values = [clean] + [
+                _pert_metric(perturbation, dom, ptype, lvl, "macro_f1")
+                for lvl in PERTURB_LEVELS
+            ]
+            ax.plot(
+                x_base + offsets[idx],
+                values,
+                marker="o",
+                linewidth=2.5,
+                alpha=0.85,
+                label=dom,
+            )
 
-        # Apply the offset to the x-coordinates
-        x_shifted = x_base + offsets[idx]
+        ax.set_title(PERTURB_TYPE_LABELS[ptype], fontsize=13, fontweight="bold")
+        ax.set_xlabel("Perturbation Level", fontsize=12, fontweight="bold")
+        ax.set_xticks(x_base)
+        ax.set_xticklabels(x_labels, fontsize=11)
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(True, linestyle="--", alpha=0.6)
 
-        plt.plot(x_shifted, values, 
-                 marker="o", 
-                 linewidth=2.5,  
-                 alpha=0.85, # Adds slight transparency
-                 label=dom) 
+    # Shared y-axis label on the left subplot only.
+    axes[0].set_ylabel("Macro-F1 Score", fontsize=12, fontweight="bold")
 
-    # Styling improvements
-    plt.xticks(x_base, levels, fontsize=11)
-    plt.yticks(fontsize=11)
-    
-    # Expand Y-limits slightly so lines don't touch the absolute edge of the plot
-    plt.ylim(-0.05, 1.05) 
-    
-    plt.ylabel("F1-score", fontsize=12, fontweight='bold')
-    plt.xlabel("Perturbation Level", fontsize=12, fontweight='bold')
-    plt.title("Model Robustness Against Perturbation", fontsize=14, fontweight='bold', pad=15)
-    
-    # Make the grid less distracting
-    plt.grid(True, linestyle='--', alpha=0.6)
-    
-    # 4. Move legend outside the plot to the right side
-    plt.legend(title="Specialist Domain", bbox_to_anchor=(1.02, 0.5), loc='center left', frameon=True)
+    # One shared legend for both subplots, placed to the right.
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        title="Specialist Domain",
+        bbox_to_anchor=(1.01, 0.5),
+        loc="center left",
+        frameon=True,
+    )
 
-    plt.tight_layout()
+    fig.suptitle(
+        "Model Robustness Against Perturbation (per domain)",
+        fontsize=15, fontweight="bold",
+    )
+    fig.tight_layout()
 
     save_path = os.path.join(output_dir, "perturbation_per_domain.png")
-    
-    # bbox_inches='tight' ensures the relocated legend isn't cut off when saving
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-
-    plt.show()      # <-- display in notebook
-    plt.close()     # <-- then free memory
+    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()      # display in notebook
+    plt.close(fig)  # then free memory
 
     print(f"Saved: {save_path}")
 
@@ -590,63 +646,59 @@ def _plot_perturbation_curves(perturbation: dict,
 
 def _plot_mean_perturbation(perturbation, in_domain,
                             output_dir: str = "."):
-    levels = ["Clean","Low","Medium","High"]
+    """
+    Mean robustness curve (averaged over all domains), drawn as TWO side-by-side
+    subplots: one for semantic, one for typo. Same Clean baseline in both,
+    shared y-axis, consistent with _plot_perturbation_curves.
+    """
+    x_labels = [lvl.capitalize() for lvl in PERTURB_SEQUENCE]
+    x_base = np.arange(len(PERTURB_SEQUENCE))
 
-    means = []
-    x_base = np.array([0, 1, 2, 3])
+    # Clean mean is shared across both subplots.
+    clean_mean = np.mean([
+        _clean_metric(perturbation, in_domain, dom, "macro_f1")
+        for dom in DOMAINS
+    ]) if DOMAINS else 0.0
 
-    plt.figure(figsize=(10, 6))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
 
-    for lvl in ["clean", "low", "medium", "high"]:
+    for ax, ptype in zip(axes, PERTURB_TYPES):
+        means = [clean_mean]
+        for lvl in PERTURB_LEVELS:
+            vals = [
+                _pert_metric(perturbation, dom, ptype, lvl, "macro_f1")
+                for dom in DOMAINS
+            ]
+            means.append(np.mean(vals) if vals else 0.0)
 
-        vals = []
+        ax.plot(
+            x_base,
+            means,
+            marker="o",
+            markersize=8,
+            linewidth=2.5,
+            color="tab:blue",
+            label="Average",
+        )
+        ax.set_title(PERTURB_TYPE_LABELS[ptype], fontsize=13, fontweight="bold")
+        ax.set_xlabel("Perturbation Level", fontsize=12, fontweight="bold")
+        ax.set_xticks(x_base)
+        ax.set_xticklabels(x_labels, fontsize=11)
+        ax.set_ylim(-0.05, 1.05)
+        ax.grid(True, linestyle="--", alpha=0.6)
 
-        for dom in DOMAINS:
-            if lvl == "clean":
-                f1 = _v(in_domain.get(dom, {}).get("metrics", {}).get("macro_f1", 0))
-            else:
-                f1 = _v(
-                    perturbation.get(dom, {})
-                    .get(lvl, {})
-                    .get("metrics", {})
-                    .get("macro_f1", 0)
-                )
-            vals.append(f1)
+    axes[0].set_ylabel("Mean Macro-F1 Score", fontsize=12, fontweight="bold")
 
-        means.append(np.mean(vals))
-
-    plt.plot(
-        x_base,
-        means,
-        marker="o",
-        markersize=8,
-        linewidth=2.5,
-        color="tab:blue",
-        label="Average"
+    fig.suptitle(
+        "Mean Model Robustness Against Perturbation (all domains)",
+        fontsize=15, fontweight="bold",
     )
-
-    # Styling improvements
-    plt.xticks(x_base, levels, fontsize=11)
-    plt.yticks(fontsize=11)
-    
-    # Expand Y-limits slightly so lines don't touch the absolute edge of the plot
-    plt.ylim(-0.05, 1.05) 
-    
-    plt.ylabel("Mean F1-score", fontsize=12, fontweight='bold')
-    plt.xlabel("Perturbation Level", fontsize=12, fontweight='bold')
-    
-    # Make the grid less distracting
-    plt.grid(True, linestyle='--', alpha=0.6)
-    
-    plt.tight_layout()
+    fig.tight_layout()
 
     save_path = os.path.join(output_dir, "perturbation_mean.png")
-    
-    # bbox_inches='tight' ensures the relocated legend isn't cut off when saving
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-
-    plt.show()      # <-- display in notebook
-    plt.close()     # <-- then free memory
+    fig.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()      # display in notebook
+    plt.close(fig)  # then free memory
 
     print(f"Saved: {save_path}")
 

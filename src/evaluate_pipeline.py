@@ -38,7 +38,11 @@ import numpy as np
 from config import config
 from data_manager import DataManager
 from model_trainer import ModelTrainer
-from evaluation_engine import EvaluationEngine
+from evaluation_engine import (
+    EvaluationEngine,
+    PERTURBATION_TYPES,
+    PERTURBATION_LEVELS,
+)
 from perturbation_engine import PerturbationEngine
 from statistical_analyzer import StatisticalAnalyzer
 from error_analyzer import ErrorAnalyzer, attach_texts_to_results
@@ -125,20 +129,24 @@ class EvaluationPipeline:
             # test split that was held out during train_pipeline.py.
             splits_dir = os.path.join(self.train_output_dir, "data_splits")
 
-            if os.path.exists(splits_dir):
-                logger.info(f"Loading existing domain splits from {splits_dir}")
-                domain_splits = data_manager.load_domain_splits(splits_dir)
-            else:
-                logger.warning(
-                    f"No pre-saved splits found at {splits_dir}. "
-                    "Recreating splits — make sure this matches the training seed."
+            # Load the ONE shared test split held out during training.
+            #
+            # All model notebooks (base / large / lite) MUST evaluate on the
+            # exact same split, so evaluation never creates its own split.
+            # If the pre-saved splits are missing we FAIL FAST rather than
+            # silently generating a fresh (possibly different) split.
+            if not os.path.exists(splits_dir):
+                raise FileNotFoundError(
+                    f"No pre-saved data splits found at '{splits_dir}'. "
+                    "Evaluation will NOT create a new split, because all model "
+                    "notebooks must evaluate on the same split. "
+                    "Run train_pipeline.py once to create data_splits/, then "
+                    "pass --train-output-dir pointing at that same folder for "
+                    "every model you evaluate."
                 )
-                domain_splits = data_manager.stratified_split_by_domain(
-                    train_size=config.data.TRAIN_SIZE,
-                    val_size=config.data.VAL_SIZE,
-                    test_size=config.data.TEST_SIZE
-                )
-                data_manager.export_domain_splits(domain_splits, splits_dir)
+
+            logger.info(f"Loading the shared test split from {splits_dir}")
+            domain_splits = data_manager.load_domain_splits(splits_dir)
 
             # Evaluation only needs the test split of each domain
             test_data_by_domain = {
@@ -251,7 +259,7 @@ class EvaluationPipeline:
 
         model_output_dir = os.path.join(self.output_dir, model_name)
         perturbation_output_dir = os.path.join(
-            "/content/drive/MyDrive/thesis/results/perturb_data",
+            "/content/drive/MyDrive/thesis/results",
             model_name
         )
 

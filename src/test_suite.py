@@ -184,8 +184,10 @@ from data_manager import DataManager, DatasetValidator
 from perturbation_engine import (
     PerturbationEngine,
     SemanticWordSubstitution,
+    TypoCharacterPerturbation,
     IndonesianThesaurus,
     PERTURBATION_INTENSITIES,
+    TYPO_INTENSITIES,
     SIM_MIN,
     SIM_MAX,
     tokenize_words,
@@ -196,6 +198,8 @@ from evaluation_engine import (
     CrossDomainEvaluator,
     PerturbationEvaluator,
     EvaluationEngine,
+    PERTURBATION_TYPES,
+    PERTURBATION_LEVELS,
 )
 from statistical_analyzer import (
     BayesianTester, ROPEAnalyzer, SignificanceTester,
@@ -293,22 +297,42 @@ def _make_fake_results(domains=None, include_perturbation=True) -> dict:
                 }
             cross_domain[key] = entry
 
+    # Nested perturbation structure:
+    #   perturbation[domain] = {
+    #       'clean': {...},
+    #       'semantic': {'low': {...}, 'medium': {...}, 'high': {...}},
+    #       'typo':     {'low': {...}, 'medium': {...}, 'high': {...}},
+    #   }
+    # The shared 'clean' baseline lives once at the top of each domain.
+    _levels = ["low", "medium", "high"]
+
+    def _level_block(f1):
+        return {
+            "metrics": {
+                "accuracy": f1 - 0.01,
+                "macro_f1": f1,
+                "macro_precision": 0.74, "macro_recall": 0.76,
+                # dashboard reads 'f1'/'precision'/'recall'; include them too
+                "f1": f1, "precision": 0.74, "recall": 0.76,
+            },
+            "predictions": preds,
+            "probabilities": proba,
+            "true_labels": labels,
+            "texts": texts[:n],
+        }
+
     perturbation = {}
     if include_perturbation:
         for d in domains:
-            perturbation[d] = {}
-            for lvl in ["clean", "low", "medium", "high"]:
-                perturbation[d][lvl] = {
-                    "metrics": {
-                        "accuracy": 0.75 - 0.03 * ["clean","low","medium","high"].index(lvl),
-                        "macro_f1": 0.75 - 0.05 * ["clean","low","medium","high"].index(lvl),
-                        "macro_precision": 0.74, "macro_recall": 0.76,
-                    },
-                    "predictions": preds,
-                    "probabilities": proba,
-                    "true_labels": labels,
-                    "texts": texts[:n],
-                }
+            domain_block = {"clean": _level_block(0.75)}
+            for ptype in ["semantic", "typo"]:
+                domain_block[ptype] = {}
+                for i, lvl in enumerate(_levels):
+                    # F1 decreases as intensity rises; typo drops a bit faster
+                    # so the two mechanisms are distinguishable in tests.
+                    step = 0.05 if ptype == "semantic" else 0.07
+                    domain_block[ptype][lvl] = _level_block(0.75 - step * (i + 1))
+            perturbation[d] = domain_block
 
     return {
         "timestamp": "2024-01-01T00:00:00",
@@ -599,6 +623,25 @@ class TestPerturbationConstants(unittest.TestCase):
         self.assertAlmostEqual(PERTURBATION_INTENSITIES["medium"], 0.20)
         self.assertAlmostEqual(PERTURBATION_INTENSITIES["high"],   0.30)
 
+    def test_typo_intensities_keys_and_values(self):
+        """Typo mechanism has its own distinct level names and character targets."""
+        self.assertEqual(
+            set(TYPO_INTENSITIES.keys()),
+            {"typo_low", "typo_medium", "typo_high"},
+        )
+        self.assertAlmostEqual(TYPO_INTENSITIES["typo_low"],    0.10)
+        self.assertAlmostEqual(TYPO_INTENSITIES["typo_medium"], 0.30)
+        self.assertAlmostEqual(TYPO_INTENSITIES["typo_high"],   0.50)
+
+    def test_typo_intensities_ordered(self):
+        self.assertLess(TYPO_INTENSITIES["typo_low"], TYPO_INTENSITIES["typo_medium"])
+        self.assertLess(TYPO_INTENSITIES["typo_medium"], TYPO_INTENSITIES["typo_high"])
+
+    def test_nested_structure_constants(self):
+        """The evaluation engine drives its perturbation loops from these."""
+        self.assertEqual(PERTURBATION_TYPES, ["semantic", "typo"])
+        self.assertEqual(PERTURBATION_LEVELS, ["low", "medium", "high"])
+
     def test_sim_bounds(self):
         self.assertGreater(SIM_MIN, 0.0)
         self.assertLess(SIM_MAX, 1.0)
@@ -655,29 +698,41 @@ class TestPerturbationEngine(unittest.TestCase):
                 "original_text": text,
                 "perturbed_text": result_text,
                 "perturbation_level": None,
-                "perturbation_rule": "stub",
                 "target_intensity": intensity,
                 "total_words": n,
-                "direct_lookup_words": words_changed,
-                "reverse_parent_lookup_words": 0,
-                "stemmed_lookup_words": 0,
                 "failed_lookup_words": max(0, n - words_changed),
                 "eligible_words": n,
                 "target_words": n_change,
                 "words_changed": words_changed,
                 "actual_ratio_all_words": words_changed / n if n else 0.0,
-                "actual_ratio_eligible_words": words_changed / n if n else 0.0,
                 "is_same_as_original": result_text == text,
                 "similarity_in_range": True,
                 "perturbation_in_range": words_changed == n_change,
-                "word_cosine_similarity_mean": 0.88,
-                "word_cosine_similarity_min": 0.88,
-                "word_cosine_similarity_max": 0.88,
+                "similarity_score_mean": 0.88,
+                "similarity_score_min": 0.88,
+                "similarity_score_max": 0.88,
                 "replacements": replacements,
             }
 
         stub.perturb_with_metadata.side_effect = _stub_perturb_with_metadata
         engine.perturbation = stub
+
+        # Typo mechanism stub. It reuses the same simple reverse-substitution so
+        # tests do not need a real keyboard/Levenshtein run; it just has to
+        # return the shared contract keys and accept an intensity.
+        typo_stub = MagicMock()
+
+        def _stub_typo_with_metadata(text, intensity, **kwargs):
+            result = _stub_perturb_with_metadata(text, intensity)
+            # Add the honestly-named typo keys the real class returns.
+            result["char_edit_ratio"] = result["actual_ratio_all_words"]
+            result["char_cosine_similarity"] = 0.88
+            result["total_chars"] = len(text)
+            result["typo_operations"] = "substitution"
+            return result
+
+        typo_stub.perturb_with_metadata.side_effect = _stub_typo_with_metadata
+        engine.typo_perturbation = typo_stub
         return engine
 
     def setUp(self):
@@ -733,6 +788,42 @@ class TestPerturbationEngine(unittest.TestCase):
     def test_invalid_level_raises(self):
         with self.assertRaises(ValueError):
             self.engine.apply_perturbation("text", "extreme")
+
+    # ── Typo levels route to the typo mechanism ───────────────────────────────
+
+    def test_typo_levels_use_typo_mechanism(self):
+        """typo_* levels must delegate to the typo perturbation object,
+        NOT the semantic one."""
+        for level in ("typo_low", "typo_medium", "typo_high"):
+            self.engine.perturbation.perturb_with_metadata.reset_mock()
+            self.engine.typo_perturbation.perturb_with_metadata.reset_mock()
+            self.engine.apply_perturbation(SAMPLE_HEADLINES[0], level)
+            # Typo stub called once; semantic stub not called.
+            self.assertEqual(
+                self.engine.typo_perturbation.perturb_with_metadata.call_count, 1
+            )
+            self.assertEqual(
+                self.engine.perturbation.perturb_with_metadata.call_count, 0
+            )
+
+    def test_typo_level_returns_string(self):
+        for text in SAMPLE_HEADLINES:
+            result = self.engine.apply_perturbation(text, "typo_medium")
+            self.assertIsInstance(result, str)
+
+    def test_typo_metadata_has_shared_contract_keys(self):
+        """A typo result must expose the same contract keys the pipeline reads,
+        so the DataFrame/CSV schema stays consistent with the semantic path."""
+        result = self.engine.apply_perturbation_with_metadata(
+            SAMPLE_HEADLINES[0], "typo_low"
+        )
+        for key in (
+            "original_text", "perturbed_text", "perturbation_level",
+            "is_same_as_original", "similarity_in_range",
+            "perturbation_in_range", "actual_ratio_all_words",
+        ):
+            self.assertIn(key, result)
+        self.assertEqual(result["perturbation_level"], "typo_low")
 
     # ── apply_perturbation_with_metadata ─────────────────────────────────────
 
@@ -908,24 +999,19 @@ def _make_stub_perturbation_result(text: str, intensity: float) -> dict:
         "original_text": text,
         "perturbed_text": text,
         "perturbation_level": None,
-        "perturbation_rule": "stub",
         "target_intensity": intensity,
         "total_words": n,
-        "direct_lookup_words": 0,
-        "reverse_parent_lookup_words": 0,
-        "stemmed_lookup_words": 0,
         "failed_lookup_words": n,
         "eligible_words": 0,
         "target_words": 0,
         "words_changed": 0,
         "actual_ratio_all_words": 0.0,
-        "actual_ratio_eligible_words": 0.0,
         "is_same_as_original": True,
         "similarity_in_range": False,
         "perturbation_in_range": False,
-        "word_cosine_similarity_mean": float("nan"),
-        "word_cosine_similarity_min": float("nan"),
-        "word_cosine_similarity_max": float("nan"),
+        "similarity_score_mean": float("nan"),
+        "similarity_score_min": float("nan"),
+        "similarity_score_max": float("nan"),
         "replacements": [],
     }
 

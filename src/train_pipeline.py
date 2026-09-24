@@ -97,26 +97,47 @@ class TrainingPipeline:
             summary = data_manager.get_summary()
             logger.info(f"Loaded {summary['total_samples']} samples from {len(summary['domains'])} domains")
             
-            # 1. Get the isolated dictionary of splits (NEW WAY)
-            domain_splits = data_manager.stratified_split_by_domain(
-                train_size=config.data.TRAIN_SIZE,
-                val_size=config.data.VAL_SIZE,
-                test_size=config.data.TEST_SIZE
-            )
-            
-            # 2. Export the isolated domain splits to folders
             splits_dir = os.path.join(self.output_dir, 'data_splits')
-            data_manager.export_domain_splits(domain_splits, splits_dir)
+
+            # 1. Get the isolated dictionary of splits.
+            #
+            # IMPORTANT: create the split ONCE and reuse it. When training the
+            # second and third model variants, we must NOT re-split, because a
+            # new split would change the test set the earlier models were
+            # evaluated on. So: if data_splits/ already exists, load it;
+            # otherwise split now and save it as the canonical split.
+            if os.path.exists(splits_dir):
+                logger.info(
+                    f"Reusing existing data splits from {splits_dir} "
+                    "(no re-splitting)."
+                )
+                domain_splits = data_manager.load_domain_splits(splits_dir)
+                created_new_split = False
+            else:
+                logger.info(
+                    "No existing data splits found. Creating the canonical "
+                    f"split once and saving it to {splits_dir}."
+                )
+                domain_splits = data_manager.stratified_split_by_domain(
+                    train_size=config.data.TRAIN_SIZE,
+                    val_size=config.data.VAL_SIZE,
+                    test_size=config.data.TEST_SIZE
+                )
+                # 2. Export the isolated domain splits to folders (once).
+                data_manager.export_domain_splits(domain_splits, splits_dir)
+                created_new_split = True
 
             # 3. Stitch them back together to create the Global DataFrames!
             train_df = pd.concat([splits['train'] for splits in domain_splits.values()]).reset_index(drop=True)
             val_df = pd.concat([splits['val'] for splits in domain_splits.values()]).reset_index(drop=True)
             test_df = pd.concat([splits['test'] for splits in domain_splits.values()]).reset_index(drop=True)
-            
-            # Export the global splits so evaluate_pipeline.py can still find them
-            train_df.to_csv(os.path.join(splits_dir, 'train.csv'), index=False)
-            val_df.to_csv(os.path.join(splits_dir, 'val.csv'), index=False)
-            test_df.to_csv(os.path.join(splits_dir, 'test.csv'), index=False)
+
+            # Export the global split CSVs ONLY when we just created the split.
+            # If we reused an existing split, we must not overwrite these files.
+            if created_new_split:
+                train_df.to_csv(os.path.join(splits_dir, 'train.csv'), index=False)
+                val_df.to_csv(os.path.join(splits_dir, 'val.csv'), index=False)
+                test_df.to_csv(os.path.join(splits_dir, 'test.csv'), index=False)
             
         logger.info(f"Data preparation completed in {timer.elapsed():.2f}s")
         

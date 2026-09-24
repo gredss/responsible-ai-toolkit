@@ -38,7 +38,16 @@ class DashboardConfig:
     """
 
     DOMAINS: list = _app_config.data.DOMAINS
-    PERTURBATION_LEVELS: list = ['clean', 'low', 'medium', 'high']
+    # The two perturbation mechanisms and their three intensity levels.
+    # 'clean' is the shared unperturbed baseline (shown alongside both).
+    PERTURBATION_TYPES: list = ['semantic', 'typo']
+    PERTURBATION_LEVELS: list = ['low', 'medium', 'high']
+    # Full ordered sequence used when a chart shows clean -> increasing noise.
+    PERTURBATION_SEQUENCE: list = ['clean', 'low', 'medium', 'high']
+    PERTURBATION_TYPE_LABELS: dict = {
+        'semantic': 'Semantic (synonym substitution)',
+        'typo': 'Typo (character noise)',
+    }
     MODEL_VARIANTS: list = [
         'indobert-base-p1', 'indobert-large-p1', 'indobert-lite-base-p1'
     ]
@@ -134,12 +143,23 @@ class SingleTextPredictor:
             apply_perturbation = st.checkbox("Apply perturbation", value=False)
             
             if apply_perturbation:
+                # Pick the mechanism first, then the intensity level.
+                perturbation_type = st.selectbox(
+                    "Perturbation type:",
+                    options=['semantic', 'typo'],
+                    index=0,
+                    format_func=lambda t: (
+                        "Semantic (synonym)" if t == "semantic"
+                        else "Typo (character noise)"
+                    ),
+                )
                 perturbation_level = st.selectbox(
                     "Perturbation level:",
                     options=['low', 'medium', 'high'],
-                    index=0
+                    index=0,
                 )
             else:
+                perturbation_type = None
                 perturbation_level = None
         
         # Predict button
@@ -194,11 +214,23 @@ class SingleTextPredictor:
                 
                 # Perturbed prediction
                 if apply_perturbation and perturbation_level:
-                    st.subheader(f"Perturbed Text Analysis ({perturbation_level.capitalize()} Level)")
-                    
+                    # The engine uses distinct level names per mechanism:
+                    #   semantic -> "low"/"medium"/"high"
+                    #   typo     -> "typo_low"/"typo_medium"/"typo_high"
+                    if perturbation_type == "typo":
+                        engine_level = f"typo_{perturbation_level}"
+                    else:
+                        engine_level = perturbation_level
+
+                    st.subheader(
+                        f"Perturbed Text Analysis "
+                        f"({perturbation_type.capitalize()} — "
+                        f"{perturbation_level.capitalize()} Level)"
+                    )
+
                     perturbed_text = self.perturbation_engine.apply_perturbation(
                         input_text,
-                        perturbation_level
+                        engine_level
                     )
                     
                     # Show perturbed text
@@ -411,31 +443,29 @@ class RobustnessAnalyzer:
             format_func=lambda x: x.upper() if x == 'f1' else x.capitalize()
         )
         
-        # Extract perturbation data
+        # Extract perturbation data for the selected domain.
+        # Nested shape: {'clean': {...}, 'semantic': {low,medium,high}, 'typo': {...}}
         pert_data = self.evaluation_results['perturbation'][selected_domain]
-        
-        # Create degradation curve
-        levels = ['clean', 'low', 'medium', 'high']
-        scores = []
-        
-        for level in levels:
-            if level in pert_data:
-                scores.append(pert_data[level]['metrics'].get(metric, 0))
-            else:
-                scores.append(0)
-        
-        # Plot degradation curve
+
+        # Shared clean baseline (same unperturbed data for both mechanisms).
+        clean_score = self._clean_score(pert_data, metric)
+
+        # Plot ONE degradation line per mechanism, each starting from clean.
         fig = go.Figure()
-        
-        fig.add_trace(go.Scatter(
-            x=levels,
-            y=scores,
-            mode='lines+markers',
-            name=selected_domain,
-            line=dict(width=3),
-            marker=dict(size=10)
-        ))
-        
+        for ptype in DashboardConfig.PERTURBATION_TYPES:
+            scores = [clean_score] + [
+                self._level_score(pert_data, ptype, level, metric)
+                for level in DashboardConfig.PERTURBATION_LEVELS
+            ]
+            fig.add_trace(go.Scatter(
+                x=DashboardConfig.PERTURBATION_SEQUENCE,
+                y=scores,
+                mode='lines+markers',
+                name=DashboardConfig.PERTURBATION_TYPE_LABELS[ptype],
+                line=dict(width=3),
+                marker=dict(size=10)
+            ))
+
         # Add threshold lines
         fig.add_hline(
             y=DashboardConfig.GOOD_PERFORMANCE_THRESHOLD,
@@ -443,14 +473,12 @@ class RobustnessAnalyzer:
             line_color="green",
             annotation_text="Good Performance"
         )
-        
         fig.add_hline(
             y=DashboardConfig.ACCEPTABLE_PERFORMANCE_THRESHOLD,
             line_dash="dash",
             line_color="orange",
             annotation_text="Acceptable Performance"
         )
-        
         fig.update_layout(
             title=f"Performance Degradation Curve - {selected_domain} ({metric.upper()})",
             xaxis_title="Perturbation Level",
@@ -458,70 +486,88 @@ class RobustnessAnalyzer:
             height=400,
             hovermode='x unified'
         )
-        
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Degradation statistics
-        st.subheader("Degradation Statistics")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        clean_score = scores[0]
-        high_score = scores[3]
-        total_degradation = clean_score - high_score
-        relative_degradation = (total_degradation / clean_score * 100) if clean_score > 0 else 0
-        
-        with col1:
-            st.metric("Clean Performance", f"{clean_score:.4f}")
-        
-        with col2:
-            st.metric("High Pert. Performance", f"{high_score:.4f}")
-        
-        with col3:
-            st.metric("Absolute Drop", f"{total_degradation:.4f}", delta_color="inverse")
-        
-        with col4:
-            st.metric("Relative Drop", f"{relative_degradation:.2f}%", delta_color="inverse")
-        
+
+        # Degradation statistics — reported PER mechanism so the two are not
+        # conflated. "High" is looked up explicitly (no fixed list index).
+        st.subheader("Degradation Statistics (Clean → High)")
+        st.metric("Clean Performance", f"{clean_score:.4f}")
+
+        for ptype in DashboardConfig.PERTURBATION_TYPES:
+            high_score = self._level_score(pert_data, ptype, 'high', metric)
+            abs_drop = clean_score - high_score
+            rel_drop = (abs_drop / clean_score * 100) if clean_score > 0 else 0
+
+            st.markdown(f"**{DashboardConfig.PERTURBATION_TYPE_LABELS[ptype]}**")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("High Pert. Performance", f"{high_score:.4f}")
+            with col2:
+                st.metric("Absolute Drop", f"{abs_drop:.4f}", delta_color="inverse")
+            with col3:
+                st.metric("Relative Drop", f"{rel_drop:.2f}%", delta_color="inverse")
+
         # Multi-domain comparison
         if st.checkbox("Compare across all domains"):
             self._render_multi_domain_comparison(metric)
+
+    @staticmethod
+    def _clean_score(pert_data: Dict[str, Any], metric: str) -> float:
+        """Shared clean-baseline metric for a domain (0 if missing)."""
+        return (
+            pert_data.get('clean', {})
+            .get('metrics', {})
+            .get(metric, 0)
+        )
+
+    @staticmethod
+    def _level_score(pert_data: Dict[str, Any], ptype: str,
+                     level: str, metric: str) -> float:
+        """One perturbed metric from the nested structure (0 if missing)."""
+        return (
+            pert_data.get(ptype, {})
+            .get(level, {})
+            .get('metrics', {})
+            .get(metric, 0)
+        )
     
     def _render_multi_domain_comparison(self, metric: str):
         """Render multi-domain comparison plot."""
         st.subheader("Multi-Domain Comparison")
-        
+
         pert_results = self.evaluation_results['perturbation']
-        levels = ['clean', 'low', 'medium', 'high']
-        
-        fig = go.Figure()
-        
-        for domain, pert_data in pert_results.items():
-            scores = []
-            for level in levels:
-                if level in pert_data:
-                    scores.append(pert_data[level]['metrics'].get(metric, 0))
-                else:
-                    scores.append(0)
-            
-            fig.add_trace(go.Scatter(
-                x=levels,
-                y=scores,
-                mode='lines+markers',
-                name=domain,
-                line=dict(width=2),
-                marker=dict(size=8)
-            ))
-        
-        fig.update_layout(
-            title=f"Multi-Domain Robustness Comparison ({metric.upper()})",
-            xaxis_title="Perturbation Level",
-            yaxis_title=metric.upper() + " Score",
-            height=450,
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
+
+        # One chart PER mechanism so the two are not visually conflated.
+        # Each chart shows all domains across clean -> low -> medium -> high,
+        # with the shared clean baseline as the first point.
+        for ptype in DashboardConfig.PERTURBATION_TYPES:
+            fig = go.Figure()
+            for domain, pert_data in pert_results.items():
+                scores = [self._clean_score(pert_data, metric)] + [
+                    self._level_score(pert_data, ptype, level, metric)
+                    for level in DashboardConfig.PERTURBATION_LEVELS
+                ]
+                fig.add_trace(go.Scatter(
+                    x=DashboardConfig.PERTURBATION_SEQUENCE,
+                    y=scores,
+                    mode='lines+markers',
+                    name=domain,
+                    line=dict(width=2),
+                    marker=dict(size=8)
+                ))
+
+            fig.update_layout(
+                title=(
+                    f"Multi-Domain Robustness — "
+                    f"{DashboardConfig.PERTURBATION_TYPE_LABELS[ptype]} "
+                    f"({metric.upper()})"
+                ),
+                xaxis_title="Perturbation Level",
+                yaxis_title=metric.upper() + " Score",
+                height=450,
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 
 class ReliabilitySummary:
@@ -678,24 +724,40 @@ class ReliabilitySummary:
         # Analyze robustness
         if 'perturbation' in self.evaluation_results:
             pert_results = self.evaluation_results['perturbation']
-            
-            high_degradations = []
-            for domain, pert_data in pert_results.items():
-                if 'high' in pert_data and 'clean' in pert_data:
-                    clean_f1 = pert_data['clean']['metrics']['f1']
-                    high_f1 = pert_data['high']['metrics']['f1']
+
+            # Report robustness PER mechanism (semantic / typo) so a
+            # recommendation is not averaged across two different phenomena.
+            # "High" degradation = (clean F1 - high-level F1) / clean F1.
+            for ptype in DashboardConfig.PERTURBATION_TYPES:
+                high_degradations = []
+                for domain, pert_data in pert_results.items():
+                    clean_block = pert_data.get('clean', {})
+                    high_block = pert_data.get(ptype, {}).get('high', {})
+                    if not clean_block or not high_block:
+                        continue
+                    clean_f1 = clean_block['metrics']['f1']
+                    high_f1 = high_block['metrics']['f1']
                     degradation = (clean_f1 - high_f1) / clean_f1 if clean_f1 > 0 else 0
                     high_degradations.append(degradation)
-            
-            if high_degradations:
+
+                if not high_degradations:
+                    continue
+
                 avg_degradation = np.mean(high_degradations)
-                
+                label = DashboardConfig.PERTURBATION_TYPE_LABELS[ptype]
                 if avg_degradation < 0.15:
-                    recommendations.append("✅ Excellent robustness to perturbations.")
+                    recommendations.append(
+                        f"✅ Excellent robustness to {label} perturbations."
+                    )
                 elif avg_degradation < 0.30:
-                    recommendations.append("✓ Moderate robustness. Consider adversarial training.")
+                    recommendations.append(
+                        f"✓ Moderate robustness to {label}. Consider adversarial training."
+                    )
                 else:
-                    recommendations.append("⚠️ High vulnerability to perturbations. Robustness improvement needed.")
+                    recommendations.append(
+                        f"⚠️ High vulnerability to {label} perturbations. "
+                        "Robustness improvement needed."
+                    )
         
         # Analyze cross-domain performance
         if 'cross_domain' in self.evaluation_results:
@@ -752,11 +814,25 @@ class ReliabilitySummary:
             
             for domain, pert_data in self.evaluation_results['perturbation'].items():
                 lines.append(f"\n{domain}:")
-                for level in ['clean', 'low', 'medium', 'high']:
-                    if level in pert_data:
-                        f1 = pert_data[level]['metrics']['f1']
-                        lines.append(f"  {level.capitalize():8s}: F1 = {f1:.4f}")
-            
+
+                # Shared clean baseline first.
+                clean_block = pert_data.get('clean', {})
+                if clean_block:
+                    clean_f1 = clean_block['metrics']['f1']
+                    lines.append(f"  {'Clean':8s}: F1 = {clean_f1:.4f}")
+
+                # Then each mechanism with its three levels.
+                for ptype in DashboardConfig.PERTURBATION_TYPES:
+                    type_block = pert_data.get(ptype, {})
+                    if not type_block:
+                        continue
+                    label = DashboardConfig.PERTURBATION_TYPE_LABELS[ptype]
+                    lines.append(f"  [{label}]")
+                    for level in DashboardConfig.PERTURBATION_LEVELS:
+                        if level in type_block:
+                            f1 = type_block[level]['metrics']['f1']
+                            lines.append(f"    {level.capitalize():8s}: F1 = {f1:.4f}")
+
             lines.append("")
         
         lines.append("=" * 80)
@@ -774,29 +850,34 @@ class ReliabilitySummary:
                 rows.append({
                     'Domain': domain,
                     'Evaluation Type': 'In-Domain',
+                    'Perturbation Type': 'None',
                     'Perturbation Level': 'Clean',
                     'F1-Score': metrics['f1'],
                     'Accuracy': metrics['accuracy'],
                     'Precision': metrics['precision'],
                     'Recall': metrics['recall']
                 })
-        
-        # Perturbation results
+
+        # Perturbation results — one row per (domain, mechanism, level).
+        # The 'Perturbation Type' column keeps semantic and typo distinct.
         if 'perturbation' in self.evaluation_results:
             for domain, pert_data in self.evaluation_results['perturbation'].items():
-                for level in ['low', 'medium', 'high']:
-                    if level in pert_data:
-                        metrics = pert_data[level]['metrics']
-                        rows.append({
-                            'Domain': domain,
-                            'Evaluation Type': 'Perturbation',
-                            'Perturbation Level': level.capitalize(),
-                            'F1-Score': metrics['f1'],
-                            'Accuracy': metrics['accuracy'],
-                            'Precision': metrics['precision'],
-                            'Recall': metrics['recall']
-                        })
-        
+                for ptype in DashboardConfig.PERTURBATION_TYPES:
+                    type_block = pert_data.get(ptype, {})
+                    for level in DashboardConfig.PERTURBATION_LEVELS:
+                        if level in type_block:
+                            metrics = type_block[level]['metrics']
+                            rows.append({
+                                'Domain': domain,
+                                'Evaluation Type': 'Perturbation',
+                                'Perturbation Type': ptype.capitalize(),
+                                'Perturbation Level': level.capitalize(),
+                                'F1-Score': metrics['f1'],
+                                'Accuracy': metrics['accuracy'],
+                                'Precision': metrics['precision'],
+                                'Recall': metrics['recall']
+                            })
+
         return pd.DataFrame(rows)
 
 
