@@ -523,7 +523,12 @@ def parse_arguments():
     parser.add_argument(
         '--amp-mode', type=str, default=None,
         choices=['auto', 'bf16', 'fp16', 'off'],
-        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100)'
+        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100, fp16 on T4)'
+    )
+    parser.add_argument(
+        '--batch-size', type=int, default=None,
+        help='Training batch size (default: config.training.BATCH_SIZE = 32). '
+             'Lower it (16) if a 16 GB GPU such as the T4 runs out of memory on the large model.'
     )
     parser.add_argument(
         '--grid-search', action='store_true',
@@ -554,6 +559,8 @@ def main():
 
         if args.amp_mode:
             config.system.AMP_MODE = args.amp_mode
+        if args.batch_size:
+            config.training.BATCH_SIZE = args.batch_size
         
         pipeline = TrainingPipeline(
             dataset_dir=args.dataset_dir,

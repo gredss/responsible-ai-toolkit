@@ -173,8 +173,9 @@ class ModelTrainer:
         self.scaler      = self._make_grad_scaler() if (
             self.amp_dtype is not None and self.amp_dtype == torch.float16) else None
         # Worker processes only help when feeding a GPU; keep CPU runs single-process.
-        self.num_workers = (sys_cfg.NUM_WORKERS if num_workers is None else num_workers) \
-            if self._on_cuda else 0
+        # Capped at the machine's core count: a free Colab T4 runtime has only ~2 vCPUs.
+        self.num_workers = min(sys_cfg.NUM_WORKERS if num_workers is None else num_workers,
+                               os.cpu_count() or 1) if self._on_cuda else 0
         self._configure_cuda_backends(sys_cfg.ALLOW_TF32)
 
         self._set_seed(random_seed)
@@ -208,7 +209,10 @@ class ModelTrainer:
             return torch.bfloat16
         if mode == "fp16":
             return torch.float16
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # Native bf16 needs compute capability >= 8.0 (A100/Ampere+). torch.cuda.is_bf16_supported()
+        # also returns True on a T4 via slow emulation, so check the capability directly.
+        native_bf16 = torch.cuda.get_device_capability(self.device)[0] >= 8
+        return torch.bfloat16 if native_bf16 else torch.float16
 
     @staticmethod
     def _make_grad_scaler():
@@ -510,6 +514,9 @@ class ModelTrainer:
         self.model.eval()
         if batch_size is None:
             batch_size = config.system.INFERENCE_BATCH_SIZE if self._on_cuda else 32
+            # 16 GB cards (T4) get a smaller inference batch than 40/80 GB A100s.
+            if self._on_cuda and torch.cuda.get_device_properties(self.device).total_memory < 20 * 1024**3:
+                batch_size = min(batch_size, 128)
 
         dbg_trainer_predict_start(n_texts=len(texts), batch_size=batch_size)
 
