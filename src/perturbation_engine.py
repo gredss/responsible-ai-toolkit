@@ -244,8 +244,15 @@ class SimilarityChecker:
         return scores
 
 
-# Module-level singleton — loaded once at import time.
-_checker = SimilarityChecker(batch_size=32)
+@lru_cache(maxsize=1)
+def get_similarity_checker() -> SimilarityChecker:
+    """
+    Return the shared SimilarityChecker, creating it on first use.
+
+    The IndoBERT encoder is loaded lazily so that importing this module does
+    not download or load any model weights.
+    """
+    return SimilarityChecker(batch_size=32)
 
 
 # ---------------------------------------------------------------------------
@@ -454,12 +461,21 @@ class SemanticWordSubstitution:
         random_seed:    int   = 42,
         sim_min:        float = SIM_MIN,
         sim_max:        float = SIM_MAX,
+        similarity_checker: Optional[SimilarityChecker] = None,
     ):
         self.thesaurus   = IndonesianThesaurus(thesaurus_path)
         self.random_seed = random_seed
         self.rng         = random.Random(random_seed)
         self.sim_min     = sim_min
         self.sim_max     = sim_max
+        # None -> resolve lazily via get_similarity_checker() on first use.
+        self._similarity_checker = similarity_checker
+
+    def _get_checker(self) -> SimilarityChecker:
+        """Injected checker if provided, otherwise the lazy shared singleton."""
+        if self._similarity_checker is not None:
+            return self._similarity_checker
+        return get_similarity_checker()
 
     def perturb(self, text: str, intensity: Optional[float] = None) -> str:
         """Return the perturbed text string (no metadata)."""
@@ -542,7 +558,7 @@ class SemanticWordSubstitution:
                 continue
 
             # Score all POS-compatible candidates in one batched call.
-            similarities = _checker.score_candidates(
+            similarities = self._get_checker().score_candidates(
                 text=text,
                 target_start=word_start,
                 target_end=word_end,
@@ -801,6 +817,7 @@ class PerturbationEngine:
         random_seed:    int   = 42,
         sim_min:        float = SIM_MIN,
         sim_max:        float = SIM_MAX,
+        similarity_checker: Optional[SimilarityChecker] = None,
     ):
         self.random_seed  = random_seed
         self.sim_min      = sim_min
@@ -810,6 +827,7 @@ class PerturbationEngine:
             random_seed=random_seed,
             sim_min=sim_min,
             sim_max=sim_max,
+            similarity_checker=similarity_checker,
         )
         logger.info(
             "PerturbationEngine ready. Levels: low=%.0f%%  medium=%.0f%%  high=%.0f%%  "
