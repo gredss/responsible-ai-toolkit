@@ -1,0 +1,130 @@
+================================================================================
+BAYESIAN STATISTICAL ANALYSIS REPORT
+IndoBERT Clickbait Robustness Study
+================================================================================
+
+Status : completed_with_warnings
+Detail : {}
+  ('completed' = sampling converged AND PPC fit acceptable AND full 300-cell design.
+   Structural PPC validation alone does NOT mean the model fits the data.)
+
+OBSERVATION SUMMARY
+----------------------------------------
+  Total observations   : 300
+  Missing F1           : ?
+  Boundary F1=0        : ?
+  Boundary F1=1        : ?
+  F1 range             : [nan, nan]
+  F1 mean (std)        : nan (nan)
+  Missing combinations : ?
+
+
+CONVERGENCE DIAGNOSTICS
+----------------------------------------
+  R-hat max            : 1.0023
+  Bulk-ESS min         : 3200
+  Tail-ESS min         : 4216
+  Divergences          : 0
+  Converged            : True
+  (R-hat near 1.0, ESS > ~400, 0 divergences = good)
+
+
+POSTERIOR PREDICTIVE CHECK
+----------------------------------------
+  Pooled (all 300 observations):
+  Statistic    Observed  Predicted    Bayes-p
+  ------------------------------------------
+  mean           0.8502     0.8496      0.435
+  std            0.0927     0.0916      0.371
+  min            0.3774     0.5142      0.998
+  max            0.9983     0.9981      0.573
+  q10            0.7271     0.7247      0.411
+  q90            0.9479     0.9547      0.944
+  (Bayes-p = one-sided P(rep >= obs); for min/q10 a value near 1 is the misfit side.)
+  Two-sided extremeness (< 0.05 = misfit): mean=0.870, std=0.742, min=0.005, max=0.853, q10=0.823, q90=0.113
+  Observations outside own 95% interval: 6 (expected about 15)
+  Source x target residual structure: P(rep >= obs) = 0.465
+  PPC MISFIT FLAGS: ['min']
+
+  By perturbation condition:
+  Condition    Obs mean  Pred mean    Bayes-p      N
+  --------------------------------------------------
+  clean          0.8668     0.8660      0.455     75
+  low            0.8555     0.8543      0.431     75
+  medium         0.8537     0.8536      0.504     75
+  high           0.8249     0.8245      0.481     75
+
+  By scenario:
+  Scenario         Obs mean  Pred mean    Bayes-p      N
+  ------------------------------------------------------
+  in_domain          0.9210     0.9213      0.527     60
+  cross_domain       0.8325     0.8317      0.421    240
+
+
+POSTERIOR CONTRASTS  (F1 scale)
+----------------------------------------
+  Mean = average contrast in Macro-F1 percentage points.
+  CI   = 95% credible interval.
+  P(+) = P(contrast > 0).  P(-) = P(contrast < 0).
+  No significance threshold applied — interpret magnitude directly.
+
+  Contrast                                                Mean                95% CI   P(+)   P(-)
+  -----------------------------------------------------------------------------------------------
+
+  RQ1 — Model Variant Comparisons
+  model_base_vs_large                                  -0.0157    [-0.0259, -0.0055]  0.001  0.999
+    -> Positive = base has higher F1 than large (common cells only)
+  model_base_vs_lite                                   +0.0674    [+0.0560, +0.0792]  1.000  0.000
+    -> Positive = base has higher F1 than lite (common cells only)
+  model_large_vs_lite                                  +0.0831    [+0.0719, +0.0944]  1.000  0.000
+    -> Positive = large has higher F1 than lite (common cells only)
+
+  RQ2 — In-Domain vs Cross-Domain
+  in_domain_vs_cross_domain                            +0.0895    [+0.0804, +0.0985]  1.000  0.000
+    -> Positive = in-domain has higher F1 than cross-domain (expected). In-domain uses diagonal cells; cross-domain uses off-diagonal cells.
+
+  RQ3 — Perturbation Degradation
+  clean_vs_low                                         +0.0117    [-0.0004, +0.0239]  0.970  0.030
+    -> Positive = F1 drops from clean to low (degradation). Common cells only.
+  clean_vs_medium                                      +0.0125    [+0.0002, +0.0248]  0.977  0.023
+    -> Positive = F1 drops from clean to medium (degradation). Common cells only.
+  clean_vs_high                                        +0.0415    [+0.0286, +0.0541]  1.000  0.000
+    -> Positive = F1 drops from clean to high (degradation). Common cells only.
+  low_vs_medium                                        +0.0008    [-0.0118, +0.0132]  0.548  0.452
+    -> Positive = F1 drops from low to medium perturbation.
+  medium_vs_high                                       +0.0290    [+0.0160, +0.0419]  1.000  0.000
+    -> Positive = F1 drops from medium to high perturbation.
+
+  RQ4 — Model × Perturbation
+  interaction_degradation_base_vs_large_at_low         -0.0028    [-0.0301, +0.0248]  0.416  0.584
+    -> Positive = base degrades MORE than large at low.
+  interaction_degradation_base_vs_large_at_medium      -0.0068    [-0.0342, +0.0202]  0.322  0.678
+    -> Positive = base degrades MORE than large at medium.
+  interaction_degradation_base_vs_large_at_high        -0.0165    [-0.0445, +0.0114]  0.124  0.876
+    -> Positive = base degrades MORE than large at high.
+  interaction_degradation_base_vs_lite_at_low          -0.0184    [-0.0485, +0.0116]  0.119  0.881
+    -> Positive = base degrades MORE than lite at low.
+  interaction_degradation_base_vs_lite_at_medium       -0.0394    [-0.0701, -0.0087]  0.007  0.993
+    -> Positive = base degrades MORE than lite at medium.
+  interaction_degradation_base_vs_lite_at_high         -0.0817    [-0.1135, -0.0501]  0.000  1.000
+    -> Positive = base degrades MORE than lite at high.
+  interaction_degradation_large_vs_lite_at_low         -0.0156    [-0.0450, +0.0134]  0.154  0.846
+    -> Positive = large degrades MORE than lite at low.
+  interaction_degradation_large_vs_lite_at_medium      -0.0326    [-0.0618, -0.0026]  0.017  0.983
+    -> Positive = large degrades MORE than lite at medium.
+  interaction_degradation_large_vs_lite_at_high        -0.0652    [-0.0963, -0.0342]  0.000  1.000
+    -> Positive = large degrades MORE than lite at high.
+
+  RQ5 — Perturbation × Scenario
+  interaction_scenario_degradation_at_low              -0.0006    [-0.0255, +0.0240]  0.481  0.519
+    -> Positive = in-domain degrades MORE than cross-domain at low. Negative = cross-domain degrades more (expected direction).
+  interaction_scenario_degradation_at_medium           -0.0201    [-0.0433, +0.0033]  0.047  0.953
+    -> Positive = in-domain degrades MORE than cross-domain at medium. Negative = cross-domain degrades more (expected direction).
+  interaction_scenario_degradation_at_high             -0.0165    [-0.0419, +0.0092]  0.105  0.894
+    -> Positive = in-domain degrades MORE than cross-domain at high. Negative = cross-domain degrades more (expected direction).
+
+  Contrast validation: 21/21 passed
+
+================================================================================
+END OF REPORT
+================================================================================

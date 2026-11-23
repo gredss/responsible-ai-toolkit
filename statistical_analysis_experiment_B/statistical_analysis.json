@@ -1,0 +1,490 @@
+{
+  "status": "completed_with_warnings",
+  "pair_mode": "B",
+  "elapsed_seconds": 26.854180097579956,
+  "observation_report": {
+    "n_total": 300
+  },
+  "convergence": {
+    "rhat_max": 1.0023255595722165,
+    "rhat_problematic": {},
+    "ess_bulk_min": 3199.5779204268024,
+    "ess_tail_min": 4215.5314089135545,
+    "ess_problematic": {},
+    "ess_tail_problematic": {},
+    "n_divergences": 0,
+    "converged": true,
+    "warnings": []
+  },
+  "ppc": {
+    "observed": {
+      "mean": 0.850202070745473,
+      "std": 0.09270482377748332,
+      "min": 0.3774327071932949,
+      "max": 0.9983333333333333,
+      "q10": 0.7271407621498408,
+      "q90": 0.9479072579064564
+    },
+    "predicted": {
+      "mean": 0.8496155417157952,
+      "std": 0.0915818821646098,
+      "min": 0.5142172717752622,
+      "max": 0.9980995995506328,
+      "q10": 0.7247284577686903,
+      "q90": 0.9546626315214952
+    },
+    "bayesian_p_values": {
+      "mean": 0.435125,
+      "std": 0.37075,
+      "min": 0.9975,
+      "max": 0.573375,
+      "q10": 0.4115,
+      "q90": 0.943625
+    },
+    "p_rep_le_obs": {
+      "mean": 0.564875,
+      "std": 0.62925,
+      "min": 0.0025,
+      "max": 0.426625,
+      "q10": 0.5885,
+      "q90": 0.056375
+    },
+    "ppc_extremeness": {
+      "mean": 0.87025,
+      "std": 0.7415,
+      "min": 0.005,
+      "max": 0.85325,
+      "q10": 0.823,
+      "q90": 0.11275
+    },
+    "extreme_statistics": [
+      "min"
+    ],
+    "n_outside_95": 6,
+    "n_outside_95_expected": 15.0,
+    "outside_95_rows": [
+      {
+        "model": "lite",
+        "source_domain": "Health",
+        "target_domain": "Technology",
+        "perturbation_condition": "high",
+        "observed": 0.9026,
+        "lo95": 0.7127,
+        "hi95": 0.9001
+      },
+      {
+        "model": "lite",
+        "source_domain": "Politics",
+        "target_domain": "Health",
+        "perturbation_condition": "low",
+        "observed": 0.8285,
+        "lo95": 0.5999,
+        "hi95": 0.8152
+      },
+      {
+        "model": "lite",
+        "source_domain": "Politics",
+        "target_domain": "Sport",
+        "perturbation_condition": "clean",
+        "observed": 0.5204,
+        "lo95": 0.5815,
+        "hi95": 0.8042
+      },
+      {
+        "model": "lite",
+        "source_domain": "Politics",
+        "target_domain": "Sport",
+        "perturbation_condition": "low",
+        "observed": 0.5058,
+        "lo95": 0.5472,
+        "hi95": 0.7756
+      },
+      {
+        "model": "lite",
+        "source_domain": "Politics",
+        "target_domain": "Sport",
+        "perturbation_condition": "medium",
+        "observed": 0.4747,
+        "lo95": 0.5177,
+        "hi95": 0.7504
+      },
+      {
+        "model": "lite",
+        "source_domain": "Politics",
+        "target_domain": "Sport",
+        "perturbation_condition": "high",
+        "observed": 0.3774,
+        "lo95": 0.4465,
+        "hi95": 0.6844
+      }
+    ],
+    "grouped_mean_by_condition": {
+      "clean": {
+        "obs_mean": 0.8667674836263288,
+        "pred_mean": 0.8659719778650015,
+        "bayesian_p": 0.454625,
+        "n_obs": 75
+      },
+      "low": {
+        "obs_mean": 0.8555311661027567,
+        "pred_mean": 0.8543228203763816,
+        "bayesian_p": 0.431125,
+        "n_obs": 75
+      },
+      "medium": {
+        "obs_mean": 0.853658323925728,
+        "pred_mean": 0.8536375260628817,
+        "bayesian_p": 0.504125,
+        "n_obs": 75
+      },
+      "high": {
+        "obs_mean": 0.8248513093270785,
+        "pred_mean": 0.8245298425589157,
+        "bayesian_p": 0.48125,
+        "n_obs": 75
+      }
+    },
+    "grouped_mean_by_scenario": {
+      "in_domain": {
+        "obs_mean": 0.9210177069627095,
+        "pred_mean": 0.9212715835980235,
+        "bayesian_p": 0.526875,
+        "n_obs": 60
+      },
+      "cross_domain": {
+        "obs_mean": 0.8324981616911641,
+        "pred_mean": 0.831701531245238,
+        "bayesian_p": 0.421375,
+        "n_obs": 240
+      }
+    },
+    "grouped_mean_by_factor": {
+      "model": {
+        "base": {
+          "obs_mean": 0.8690491293292341,
+          "pred_mean": 0.8668572591255755,
+          "bayesian_p": 0.346875,
+          "extremeness": 0.69375,
+          "n_obs": 100,
+          "n_outside_95": 0
+        },
+        "large": {
+          "obs_mean": 0.8831910191043437,
+          "pred_mean": 0.8825394153144043,
+          "bayesian_p": 0.459875,
+          "extremeness": 0.91975,
+          "n_obs": 100,
+          "n_outside_95": 0
+        },
+        "lite": {
+          "obs_mean": 0.7983660638028415,
+          "pred_mean": 0.7994499507074052,
+          "bayesian_p": 0.571625,
+          "extremeness": 0.85675,
+          "n_obs": 100,
+          "n_outside_95": 6
+        }
+      },
+      "source_domain": {
+        "Education": {
+          "obs_mean": 0.8493784267166762,
+          "pred_mean": 0.8476593049403949,
+          "bayesian_p": 0.413125,
+          "extremeness": 0.82625,
+          "n_obs": 60,
+          "n_outside_95": 0
+        },
+        "Health": {
+          "obs_mean": 0.8442496267454936,
+          "pred_mean": 0.8432496277827888,
+          "bayesian_p": 0.451875,
+          "extremeness": 0.90375,
+          "n_obs": 60,
+          "n_outside_95": 1
+        },
+        "Politics": {
+          "obs_mean": 0.8329785308403899,
+          "pred_mean": 0.8360292830075307,
+          "bayesian_p": 0.664625,
+          "extremeness": 0.67075,
+          "n_obs": 60,
+          "n_outside_95": 5
+        },
+        "Sport": {
+          "obs_mean": 0.8565298985246399,
+          "pred_mean": 0.8550329887161573,
+          "bayesian_p": 0.424,
+          "extremeness": 0.848,
+          "n_obs": 60,
+          "n_outside_95": 0
+        },
+        "Technology": {
+          "obs_mean": 0.8678738709001658,
+          "pred_mean": 0.8661065041321037,
+          "bayesian_p": 0.40225,
+          "extremeness": 0.8045,
+          "n_obs": 60,
+          "n_outside_95": 0
+        }
+      },
+      "target_domain": {
+        "Education": {
+          "obs_mean": 0.8114390334532758,
+          "pred_mean": 0.8111042310017101,
+          "bayesian_p": 0.485125,
+          "extremeness": 0.97025,
+          "n_obs": 60,
+          "n_outside_95": 0
+        },
+        "Health": {
+          "obs_mean": 0.8328047719570465,
+          "pred_mean": 0.8321107958017296,
+          "bayesian_p": 0.4705,
+          "extremeness": 0.941,
+          "n_obs": 60,
+          "n_outside_95": 1
+        },
+        "Politics": {
+          "obs_mean": 0.907836126603072,
+          "pred_mean": 0.90714405544557,
+          "bayesian_p": 0.456875,
+          "extremeness": 0.91375,
+          "n_obs": 60,
+          "n_outside_95": 0
+        },
+        "Sport": {
+          "obs_mean": 0.7928150860956958,
+          "pred_mean": 0.7932420878315805,
+          "bayesian_p": 0.52075,
+          "extremeness": 0.9585,
+          "n_obs": 60,
+          "n_outside_95": 4
+        },
+        "Technology": {
+          "obs_mean": 0.9061153356182754,
+          "pred_mean": 0.9044765384983853,
+          "bayesian_p": 0.401,
+          "extremeness": 0.802,
+          "n_obs": 60,
+          "n_outside_95": 1
+        }
+      }
+    },
+    "source_target_structure": {
+      "statistic": "SD over (source,target) pairs of mean residual",
+      "obs_mean": 0.011562803091511014,
+      "rep_mean": 0.0113728544355077,
+      "p_rep_ge_obs": 0.465
+    },
+    "note": "All statistics use boundary-corrected F1 values. bayesian_p_values are ONE-SIDED P(rep >= obs): for 'min'/'q10' a value near 1 is the misfit direction. Use ppc_extremeness (two-sided) to judge fit; < 0.05 flags a misfit. No automatic pass/fail threshold is applied to the grouped means."
+  },
+  "ppc_validation": {
+    "passed": true,
+    "failures": []
+  },
+  "contrasts": {
+    "model_base_vs_large": {
+      "mean": -0.015709189473605258,
+      "median": -0.015668182156251598,
+      "ci_95_lower": -0.025944861346922473,
+      "ci_95_upper": -0.005466657520444363,
+      "prob_positive": 0.00125,
+      "prob_negative": 0.99875,
+      "direction_note": "Positive = base has higher F1 than large (common cells only)"
+    },
+    "model_base_vs_lite": {
+      "mean": 0.06738821604915851,
+      "median": 0.06743912536945501,
+      "ci_95_lower": 0.055951201649701535,
+      "ci_95_upper": 0.07917329479121686,
+      "prob_positive": 1.0,
+      "prob_negative": 0.0,
+      "direction_note": "Positive = base has higher F1 than lite (common cells only)"
+    },
+    "model_large_vs_lite": {
+      "mean": 0.08309740552276378,
+      "median": 0.08311213876386492,
+      "ci_95_lower": 0.07187276923251067,
+      "ci_95_upper": 0.0943500567605265,
+      "prob_positive": 1.0,
+      "prob_negative": 0.0,
+      "direction_note": "Positive = large has higher F1 than lite (common cells only)"
+    },
+    "in_domain_vs_cross_domain": {
+      "mean": 0.08954315420874068,
+      "median": 0.08952947675398126,
+      "ci_95_lower": 0.08040677504140223,
+      "ci_95_upper": 0.0985330732215386,
+      "prob_positive": 1.0,
+      "prob_negative": 0.0,
+      "direction_note": "Positive = in-domain has higher F1 than cross-domain (expected). In-domain uses diagonal cells; cross-domain uses off-diagonal cells."
+    },
+    "clean_vs_low": {
+      "mean": 0.011729200142194614,
+      "median": 0.011724100676596794,
+      "ci_95_lower": -0.000401345132781347,
+      "ci_95_upper": 0.02391388133972415,
+      "prob_positive": 0.97,
+      "prob_negative": 0.03,
+      "direction_note": "Positive = F1 drops from clean to low (degradation). Common cells only."
+    },
+    "clean_vs_medium": {
+      "mean": 0.01248252210578467,
+      "median": 0.012473292663165436,
+      "ci_95_lower": 0.00024481829427565945,
+      "ci_95_upper": 0.024787335603861812,
+      "prob_positive": 0.977125,
+      "prob_negative": 0.022875,
+      "direction_note": "Positive = F1 drops from clean to medium (degradation). Common cells only."
+    },
+    "clean_vs_high": {
+      "mean": 0.041518499365532,
+      "median": 0.041570245597114586,
+      "ci_95_lower": 0.02857166371448831,
+      "ci_95_upper": 0.054098089228869876,
+      "prob_positive": 1.0,
+      "prob_negative": 0.0,
+      "direction_note": "Positive = F1 drops from clean to high (degradation). Common cells only."
+    },
+    "low_vs_medium": {
+      "mean": 0.0007533219635900568,
+      "median": 0.0007104865001363314,
+      "ci_95_lower": -0.011767546028646925,
+      "ci_95_upper": 0.013226060104261222,
+      "prob_positive": 0.5485,
+      "prob_negative": 0.4515,
+      "direction_note": "Positive = F1 drops from low to medium perturbation."
+    },
+    "medium_vs_high": {
+      "mean": 0.029035977259747332,
+      "median": 0.0290160883945888,
+      "ci_95_lower": 0.01603106241932603,
+      "ci_95_upper": 0.04192246494586773,
+      "prob_positive": 1.0,
+      "prob_negative": 0.0,
+      "direction_note": "Positive = F1 drops from medium to high perturbation."
+    },
+    "interaction_degradation_base_vs_large_at_low": {
+      "mean": -0.0027695561222112184,
+      "median": -0.0028187972047619136,
+      "ci_95_lower": -0.030110483101295802,
+      "ci_95_upper": 0.02482475383098489,
+      "prob_positive": 0.415875,
+      "prob_negative": 0.584125,
+      "direction_note": "Positive = base degrades MORE than large at low."
+    },
+    "interaction_degradation_base_vs_large_at_medium": {
+      "mean": -0.006777856331689053,
+      "median": -0.006831994971490674,
+      "ci_95_lower": -0.03419546010078983,
+      "ci_95_upper": 0.0201624694491869,
+      "prob_positive": 0.321625,
+      "prob_negative": 0.678375,
+      "direction_note": "Positive = base degrades MORE than large at medium."
+    },
+    "interaction_degradation_base_vs_large_at_high": {
+      "mean": -0.016532708520604428,
+      "median": -0.01646530624026249,
+      "ci_95_lower": -0.044502249728982195,
+      "ci_95_upper": 0.011404818932560326,
+      "prob_positive": 0.123625,
+      "prob_negative": 0.876375,
+      "direction_note": "Positive = base degrades MORE than large at high."
+    },
+    "interaction_degradation_base_vs_lite_at_low": {
+      "mean": -0.0183662368527173,
+      "median": -0.018412227546989568,
+      "ci_95_lower": -0.04846602075960191,
+      "ci_95_upper": 0.011613922004634623,
+      "prob_positive": 0.119125,
+      "prob_negative": 0.880875,
+      "direction_note": "Positive = base degrades MORE than lite at low."
+    },
+    "interaction_degradation_base_vs_lite_at_medium": {
+      "mean": -0.03939334377626057,
+      "median": -0.03926389271828651,
+      "ci_95_lower": -0.07011162917256537,
+      "ci_95_upper": -0.0087037240403947,
+      "prob_positive": 0.007125,
+      "prob_negative": 0.992875,
+      "direction_note": "Positive = base degrades MORE than lite at medium."
+    },
+    "interaction_degradation_base_vs_lite_at_high": {
+      "mean": -0.08169625811817367,
+      "median": -0.08147021776494923,
+      "ci_95_lower": -0.11353273711154127,
+      "ci_95_upper": -0.05014494196678777,
+      "prob_positive": 0.0,
+      "prob_negative": 1.0,
+      "direction_note": "Positive = base degrades MORE than lite at high."
+    },
+    "interaction_degradation_large_vs_lite_at_low": {
+      "mean": -0.015596680730506083,
+      "median": -0.015429969574745184,
+      "ci_95_lower": -0.044972227873328004,
+      "ci_95_upper": 0.013367202053270652,
+      "prob_positive": 0.1545,
+      "prob_negative": 0.8455,
+      "direction_note": "Positive = large degrades MORE than lite at low."
+    },
+    "interaction_degradation_large_vs_lite_at_medium": {
+      "mean": -0.03261548744457152,
+      "median": -0.03251011736495041,
+      "ci_95_lower": -0.0618029738162004,
+      "ci_95_upper": -0.002553936917365381,
+      "prob_positive": 0.017,
+      "prob_negative": 0.983,
+      "direction_note": "Positive = large degrades MORE than lite at medium."
+    },
+    "interaction_degradation_large_vs_lite_at_high": {
+      "mean": -0.06516354959756925,
+      "median": -0.06517097757832291,
+      "ci_95_lower": -0.09628403413535747,
+      "ci_95_upper": -0.03417926143755683,
+      "prob_positive": 0.0,
+      "prob_negative": 1.0,
+      "direction_note": "Positive = large degrades MORE than lite at high."
+    },
+    "interaction_scenario_degradation_at_low": {
+      "mean": -0.0005656643214928488,
+      "median": -0.000647375393806715,
+      "ci_95_lower": -0.02553263282943699,
+      "ci_95_upper": 0.024016677154704215,
+      "prob_positive": 0.480875,
+      "prob_negative": 0.519125,
+      "direction_note": "Positive = in-domain degrades MORE than cross-domain at low. Negative = cross-domain degrades more (expected direction)."
+    },
+    "interaction_scenario_degradation_at_medium": {
+      "mean": -0.02010220304421797,
+      "median": -0.02008241537057237,
+      "ci_95_lower": -0.043328369299767355,
+      "ci_95_upper": 0.0032883058568385355,
+      "prob_positive": 0.04725,
+      "prob_negative": 0.95275,
+      "direction_note": "Positive = in-domain degrades MORE than cross-domain at medium. Negative = cross-domain degrades more (expected direction)."
+    },
+    "interaction_scenario_degradation_at_high": {
+      "mean": -0.016478985386908767,
+      "median": -0.016600027251901794,
+      "ci_95_lower": -0.04189429486663936,
+      "ci_95_upper": 0.009248492896373924,
+      "prob_positive": 0.1055,
+      "prob_negative": 0.8945,
+      "direction_note": "Positive = in-domain degrades MORE than cross-domain at high. Negative = cross-domain degrades more (expected direction)."
+    }
+  },
+  "contrasts_validation": {
+    "n_contrasts": 21,
+    "n_passed": 21,
+    "n_failed": 0,
+    "failures": []
+  },
+  "model_fit": {
+    "ppc_fit_ok": false,
+    "ppc_fit_issues": [
+      "min"
+    ],
+    "n_outside_95": 6,
+    "n_outside_95_expected": 15.0
+  }
+}

@@ -10,6 +10,14 @@ scikit-learn>=1.0.0
 # Statistical Analysis
 scipy>=1.7.0
 
+# Bayesian Inference (required by statistical_analyzer.py)
+# PyMC 5 uses pytensor as its backend (replaces Theano/Aesara from PyMC 4).
+# ArviZ is used for trace diagnostics, summary statistics, and PPC plots.
+# Install both together to guarantee version compatibility:
+#   pip install "pymc>=5.0,<6.0" "arviz>=0.17"
+pymc>=5.0,<6.0
+arviz>=0.17
+
 # Visualization & Dashboard
 streamlit>=1.15.0
 plotly>=5.0.0

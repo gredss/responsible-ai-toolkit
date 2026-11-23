@@ -324,13 +324,6 @@ def dbg_perturbation_metrics(level: str, domain: str, metrics: Dict) -> None:
     )
 
 
-def dbg_perturbation_robustness(level: str, domain: str, rob: Dict) -> None:
-    _emit(
-        _hdr("Perturbation", f"Robustness metrics  level={level}  domain={domain}") + "\n" +
-        _fmt_dict({k: v for k, v in rob.items() if isinstance(v, (int, float))})
-    )
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # [Statistics] hooks
 # ══════════════════════════════════════════════════════════════════════════════

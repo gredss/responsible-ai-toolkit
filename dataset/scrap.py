@@ -1,661 +1,935 @@
-import io
+# LOOP:
+# Detik → collect up to 250
+#        ↓
+# Kompas → collect up to 250
+#        ↓
+# CNN → collect up to 250
+#        ↓
+# Tribun → collect up to 250
+
+import nest_asyncio
+nest_asyncio.apply()
+
+import os
 import re
 import time
-import gzip
 import random
+import asyncio
 import urllib.parse
-from collections import deque
-import requests
-from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET
-from tqdm.auto import tqdm
+from datetime import date, timedelta
 import pandas as pd
+import requests
+import httpx
+from bs4 import BeautifulSoup
+from playwright.async_api import async_playwright
+from tqdm.auto import tqdm
 
-class UniversalNewsEngine:
-    def __init__(self, target_count=1000):
-        self.target_count = target_count
-        self.user_agents = [
-          # Customize based on your host / browser
-        ]
 
-    def _get_source_name(self, url):
-        url_lower = url.lower()
-        if "cnnindonesia.com" in url_lower: return "CNN Indonesia"
-        if "kompas.com" in url_lower: return "Kompas"
-        if "tribunnews.com" in url_lower: return "Tribun News"
-        if "detik.com" in url_lower: return "Detik"
-        if "tempo.co" in url_lower: return "Tempo"
+
+
+# ==========================================
+# GLOBAL CONFIG
+# ==========================================
+TARGET = 1000
+PORTAL_CAP = 250
+MAX_DATE = date(2026, 10, 3)
+MIN_DATE = date(2025, 10, 3)
+OUTPUT_COLUMNS = ["id", "source", "date", "title", "label", "url"]
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
+]
+
+# Titles containing these words are skipped (polls / quizzes, not real articles).
+POLLING_WORDS = ("polling", "tebak", "vote", "voting", "pilih siapa")
+
+DOMAINS = {
+    "technology": {
+        "label": "Technology",
+        "output_file": "data/technology.csv",
+        "keywords": ["software", "hardware", "it", "teknologi", "wifi", "internet", "robot", "ict"],
+        "cnn_indeks": "teknologi/indeks/8",
+        "cnn_section": "/teknologi/",
+        "kompas_site": "tekno",
+        "kompas_host": "tekno.kompas.com",
+        "kompas_url_patterns": ["tekno.kompas.com/read/", "www.kompas.com/tekno/read/"],
+        "detik_base": "https://inet.detik.com",
+        "detik_host": "inet.detik.com",
+        "detik_date_iso": True,
+        "detik_channels": [
+            "news", "telecommunication",
+            "gadget", "tips-tricks",
+            "cyber-life", "security",
+            "review", "mobileapps", "inet-grafis",
+        ],
+        "tribun_channels": ["index-news/techno"],
+        "tribun_marker": "techno",
+    },
+    "health": {
+        "label": "Health",
+        "output_file": "data/health.csv",
+        "keywords": ["kesehatan", "sehat", "bugar", "obat", "pertolongan", "pencegahan", "vitamin"],
+        "cnn_indeks": "health/indeks/62",
+        "cnn_section": "/gaya-hidup/",
+        "kompas_site": "health",
+        "kompas_host": "health.kompas.com",
+        "kompas_url_patterns": ["health.kompas.com/read/", "www.kompas.com/health/read/"],
+        "detik_base": "https://health.detik.com",
+        "detik_host": "health.detik.com",
+        "detik_date_iso": False,
+        "detik_channels": [
+            "berita-detikhealth", "diet",
+            "kebugaran", "true-story",
+            "sexual-health", "wellness-beauty",
+        ],
+        "tribun_channels": ["index-news/kesehatan"],
+        "tribun_marker": "kesehatan",
+    },
+    "education": {
+        "label": "Education",
+        "output_file": "data/education.csv",
+        "keywords": ["kuliah", "materi", "pendidikan", "kelas", "pembelajaran", "guru", "dosen"],
+        "cnn_indeks": "edukasi/indeks/559",
+        "cnn_section": "/edukasi/",
+        "kompas_site": "edukasi",
+        "kompas_host": "www.kompas.com/edu",
+        "kompas_url_patterns": ["www.kompas.com/edu/read/", "edukasi.kompas.com/read/"],
+        "detik_base": "https://www.detik.com/edu",
+        "detik_host": "www.detik.com",
+        "detik_date_iso": False,
+        "detik_channels": [
+            "sekolah", "perguruan-tinggi",
+            "beasiswa", "edutainment",
+            "seleksi-masuk-pt", "detikpedia",
+        ],
+        "tribun_channels": ["index-news/pendidikan"],
+        "tribun_marker": "pendidikan",
+    },
+    "sport": {
+        "label": "Sport",
+        "output_file": "data/sport.csv",
+        "keywords": ["sepakbola", "bola", "soccer", "nbl", "basket", "volly", "asian games", "skor", "ht ft"],
+        "cnn_indeks": "olahraga/indeks/7",
+        "cnn_section": "/olahraga/",
+        "kompas_site": "bola",
+        "kompas_host": "bola.kompas.com",
+        "kompas_url_patterns": ["bola.kompas.com/read/", "www.kompas.com/sports/read/"],
+        "detik_base": "https://sport.detik.com",
+        "detik_host": "sport.detik.com",
+        "detik_date_iso": False,
+        "detik_channels": [
+            "sepakbola", "basket",
+            "moto-gp", "f1",
+            "raket", "sport-lain",
+            "g-sport", "sportstyle",
+        ],
+        "tribun_channels": ["index-news/sport"],
+        "tribun_marker": "sport",
+    },
+    "politics": {
+        "label": "Politics",
+        "output_file": "data/politic.csv",
+        "keywords": ["politik", "parpol", "partai", "pemilu", "kpu", "pencoblosan", "pemungutan suara", "oposisi"],
+        "cnn_indeks": "nasional/indeks/3",
+        "cnn_section": "/nasional/",
+        "kompas_site": "nasional",
+        "kompas_host": "nasional.kompas.com",
+        "kompas_url_patterns": [
+            "nasional.kompas.com/read/",
+            "www.kompas.com/nasional/read/",
+            "sorotpolitik.kompas.com/read/",
+        ],
+        "detik_base": "https://news.detik.com",
+        "detik_host": "news.detik.com",
+        "detik_date_iso": False,
+        "detik_channels": [
+            "berita", "internasional",
+            "bbc", "investigasi",
+            "pemilu", "pilkada",
+            "bangun-indonesia", "nyago-bumi-sriwijaya",
+            "jabodetabek", "hukum",
+        ],
+        "tribun_channels": [
+            "index-news/nasional",
+            "index-news/dpd-ri",
+            "index-news/mpr-ri",
+            "index-news/kilas-kementerian",
+        ],
+        "tribun_marker": "nasional",
+    },
+}
+
+PORTAL_ORDER = ["Detik", "Kompas", "CNN Indonesia", "Tribun News"]
+
+
+# ==========================================
+# SHARED HELPERS (unchanged)
+# ==========================================
+def keyword_matches(keyword, text):
+    words = [re.escape(w) for w in keyword.lower().split()]
+    pattern = r"\b" + r"[\s\-]+".join(words) + r"\b"
+    return re.search(pattern, text.lower()) is not None
+
+
+def title_has_keyword(title, keywords):
+    return any(keyword_matches(k, title) for k in keywords)
+
+
+def new_funnel():
+    return {
+        "candidates": 0, "date_rejected": 0, "keyword_rejected": 0,
+        "duplicate": 0, "collected": 0,
+    }
+
+
+def print_funnel(portal_name, f):
+    print(
+        f"[FUNNEL] {portal_name} | candidates={f['candidates']} | "
+        f"collected={f['collected']} | "
+        f"reject(date={f['date_rejected']}, "
+        f"keyword={f['keyword_rejected']}, "
+        f"duplicate={f['duplicate']})",
+        flush=True,
+    )
+
+
+def clean_title(title):
+    if not title:
         return None
-
-    def _extract_date(self, url, lastmod_text, pub_date_text):
-        for text in [pub_date_text, lastmod_text]:
-            if text:
-                match = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
-                if match:
-                    year, month, day = match.groups()
-                    if 2022 <= int(year) <= 2026:
-                        return f"{year}-{month}-{day}"
-
-        match_slash = re.search(r"/(\d{4})/(\d{2})/(\d{2})", url)
-        if match_slash:
-            year, month, day = match_slash.groups()
-            if 2022 <= int(year) <= 2026:
-                return f"{year}-{month}-{day}"
-
-        match_cnn = re.search(r"/(\d{4})(\d{2})(\d{2})\d*-", url)
-        if match_cnn:
-            year, month, day = match_cnn.groups()
-            if 2022 <= int(year) <= 2026:
-                return f"{year}-{month}-{day}"
-
-        return None
-
-    def _extract_title(self, url, xml_title, source):
-        """ALWAYS fetch title from article page for maximum accuracy"""
-        # ALWAYS fetch from actual article page - XML titles are unreliable
-        # They often contain image captions, gallery titles, or outdated content
-        fetched_title = self._fetch_title_from_page(url, source)
-        
-        if fetched_title and len(fetched_title) > 15:
-            return fetched_title
-        
-        # Only use XML as absolute last resort if page fetch fails
-        if xml_title and len(xml_title.strip()) > 20:
-            xml_lower = xml_title.lower().strip()
-            # Skip if it's clearly a caption
-            if not any(xml_lower.startswith(prefix) for prefix in ["ilustrasi", "foto", "gambar", "image", "kumpulan"]):
-                cleaned = re.sub(r'\s+\d{6,}$', '', xml_title.strip())
-                if len(cleaned) > 15:
-                    return cleaned
-        
-        # Final fallback to URL parsing
-        return self._fallback_title_from_url(url)
-    
-    def _fetch_title_from_page(self, url, source):
-        """Fetch actual title from article page - most reliable method"""
-        try:
-            headers = {
-                "User-Agent": random.choice(self.user_agents),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "id,en-US;q=0.7,en;q=0.3"
-            }
-            time.sleep(random.uniform(0.5, 1.0))
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code != 200:
-                return None
-            
-            soup = BeautifulSoup(response.text, "html.parser")
-            title = None
-            
-            # Method 1: h1 tag (article headline - MOST ACCURATE for actual content)
-            h1_tag = soup.find("h1")
-            if h1_tag:
-                title = h1_tag.get_text().strip()
-                # Validate it's substantial
-                if len(title) > 15:
-                    title_lower = title.lower()
-                    # Make sure it's not a caption
-                    if not any(title_lower.startswith(prefix) for prefix in ["ilustrasi", "foto", "gambar", "kumpulan foto", "kumpulan gambar"]):
-                        return self._clean_title(title)
-            
-            # Method 2: og:title meta tag (reliable for social sharing)
-            og_title = soup.find("meta", property="og:title")
-            if og_title and og_title.get("content"):
-                title = og_title["content"].strip()
-                if len(title) > 15:
-                    title_lower = title.lower()
-                    if not any(title_lower.startswith(prefix) for prefix in ["ilustrasi", "foto", "gambar", "kumpulan"]):
-                        return self._clean_title(title)
-            
-            # Method 3: twitter:title meta tag
-            twitter_title = soup.find("meta", attrs={"name": "twitter:title"})
-            if twitter_title and twitter_title.get("content"):
-                title = twitter_title["content"].strip()
-                if len(title) > 15:
-                    title_lower = title.lower()
-                    if not any(title_lower.startswith(prefix) for prefix in ["ilustrasi", "foto", "gambar", "kumpulan"]):
-                        return self._clean_title(title)
-            
-            # Method 4: <title> tag (with cleanup)
-            title_tag = soup.find("title")
-            if title_tag:
-                title = title_tag.get_text().strip()
-                # Remove site name suffixes
-                for suffix in [" - CNN Indonesia", " - Kompas.com", " - detikcom", " - Tempo.co",
-                               " - Tribunnews.com", " - Tribunnews", " | Kompas.com", " | CNN Indonesia",
-                               " - Tekno Kompas.com", " - Health Kompas.com"]:
-                    if title.endswith(suffix):
-                        title = title[:-len(suffix)].strip()
-                
-                if len(title) > 15:
-                    title_lower = title.lower()
-                    if not any(title_lower.startswith(prefix) for prefix in ["ilustrasi", "foto", "gambar", "kumpulan"]):
-                        return self._clean_title(title)
-            
-            return None
-            
-        except Exception:
-            return None
-    
-    def _clean_title(self, title):
-        """Clean and validate title"""
-        if not title:
-            return None
-        
-        # Remove extra whitespace
-        title = re.sub(r'\s+', ' ', title).strip()
-        
-        # Remove trailing article IDs
-        title = re.sub(r'\s+\d{6,}$', '', title)
-        
-        # Remove common prefixes that indicate non-article content
-        title = re.sub(r'^(FOTO:|VIDEO:|INFOGRAFIS:|BREAKING NEWS:|Ilustrasi|Gambar|Kumpulan Foto|Kumpulan Gambar)\s*[:\-]?\s*', '', title, flags=re.IGNORECASE)
-        
-        # Final validation
-        title_lower = title.lower()
-        if (len(title) > 15 and
-            not title_lower.startswith("ilustrasi") and
-            not title_lower.startswith("foto") and
-            not title_lower.startswith("gambar") and
-            not title_lower.startswith("kumpulan")):
-            return title
-        
-        return None
-    
-    def _fallback_title_from_url(self, url):
-        """Extract title from URL as last resort"""
-        try:
-            path = urllib.parse.urlparse(url).path
-            parts = [p for p in path.split("/") if p]
-            if not parts:
-                return "News Article"
-            
-            last_part = parts[-1]
-            # Remove file extensions
-            last_part = re.sub(r"\.(html|htm|php|asp)$", "", last_part)
-            # Remove date patterns
-            last_part = re.sub(r"^\d{4}-\d{2}-\d{2}-", "", last_part)
-            last_part = re.sub(r"^\d{8,}-", "", last_part)
-            # Remove trailing numbers
-            last_part = re.sub(r"-\d{6,}$", "", last_part)
-            
-            # Convert to readable title
-            title_cleaned = last_part.replace("-", " ").replace("_", " ").strip().title()
-            return title_cleaned if len(title_cleaned) > 10 else "News Article"
-        except Exception:
-            return "News Article"
+    title = re.sub(r"\s+", " ", title).strip()
+    return title
 
 
-    def run_harvest(self, config):
-        """Executes targeted collection using specific domain criteria parameters."""
-        sitemap_queue = deque(config["seed_sitemaps"])
-        visited_sitemaps = set()
-        collected_articles = []
-        seen_urls = set()
-        seen_titles = set()
-        
-        headers = {"User-Agent": self.user_agents[0], "Accept-Encoding": "gzip, deflate"}
-        print(f"\n[ENGINE] Starting collection profile for task: {config['domain_label'].upper()}")
-        
-        progress_bar = tqdm(total=self.target_count, desc=f"Harvesting {config['domain_label']}", unit="rows")
-        
-        while sitemap_queue and len(collected_articles) < self.target_count:
-            current_sitemap = sitemap_queue.popleft()
-            if current_sitemap in visited_sitemaps: continue
-            visited_sitemaps.add(current_sitemap)
-            
-            progress_bar.set_postfix({"Sitemap": current_sitemap.split('/')[-1][:20]}, refresh=True)
-            
-            try:
-                time.sleep(0.4)
-                response = requests.get(current_sitemap, headers=headers, timeout=12)
-                if response.status_code != 200: continue
-                    
-                content = response.content
-                if current_sitemap.endswith(".gz") or response.headers.get("Content-Encoding") == "gzip":
-                    try:
-                        with gzip.GzipFile(fileobj=io.BytesIO(content)) as f: xml_content = f.read()
-                    except Exception: xml_content = content
-                else:
-                    xml_content = content
-                    
+def within_window(dstr):
+    try:
+        y, m, d = map(int, dstr.split("-"))
+        return MIN_DATE <= date(y, m, d) <= MAX_DATE
+    except Exception:
+        return False
+
+
+def record_article(articles, seen_urls, seen_titles, funnel, bar, source, url, title, dstr):
+    """Save one accepted article.
+
+    Every scraper runs the SAME final step once an article has passed all of
+    its filters: remember the url/title so we never add it twice, append the
+    row, bump the counters, and tick the progress bar. This helper is that
+    shared step, so the four scrapers don't each repeat it.
+    """
+    seen_urls.add(url)
+    seen_titles.add(title.lower())
+    articles.append({
+        "id": 0, "source": source, "date": dstr,
+        "title": title, "label": None, "url": url,
+    })
+    funnel["collected"] += 1
+    if bar is not None:
+        bar.update(1)
+
+
+def log_fetch(portal_name, url):
+    """Line 1: the exact index URL we are about to request."""
+    print(f"[INDEX] {portal_name} | {url}", flush=True)
+
+
+def log_result(portal_name, scope, date_iso, page, raw_links, new, collected):
+    """Line 2: the per-page result, in ONE shared format for every portal.
+
+    `scope` is the channel name for Detik/Tribun, or "" for CNN/Kompas
+    (which have no channel). A leading space is added only when scope is set,
+    so the output stays clean either way.
+    """
+    scope_part = f"{scope} " if scope else ""
+    print(
+        f"[INDEX] {portal_name} | {scope_part}Date={date_iso} page={page} | "
+        f"raw_links={raw_links} | new={new} | Collected={collected}/{TARGET}",
+        flush=True,
+    )
+
+
+def new_portal_state():
+    return {"collected": 0, "last_date": MAX_DATE, "exhausted": False}
+
+
+
+
+
+# ==========================================
+# DETIK  (original logs preserved)
+# ==========================================
+async def scrape_detik_batch(cfg, articles, seen_urls, seen_titles, state, quota, bar, funnel):
+    if state["exhausted"] or quota <= 0:
+        return 0
+    portal_name = "Detik"
+    f = funnel
+    keywords = cfg["keywords"]
+    host = cfg["detik_host"]
+    origin = "https://" + host
+    channels = cfg.get("detik_channels") or ["indeks"]
+    base_root = cfg["detik_base"].rstrip("/")
+    added = 0
+    current = state["last_date"]
+    print(f"\n[DETIK] Starting (multi-channel)...", flush=True)
+
+    while current >= MIN_DATE and added < quota and len(articles) < TARGET:
+        date_iso = current.strftime("%Y-%m-%d")
+        date_param = current.strftime("%Y-%m-%d" if cfg.get("detik_date_iso") else "%m/%d/%Y")
+
+        # === CHANNEL LOOP (must wrap everything below) ===
+        for channel in channels:
+            if added >= quota or len(articles) >= TARGET:
+                break
+
+            index_base = f"{base_root}/{channel}/indeks"
+            seen_this_date = set()
+            prev_page_urls = None
+            page = 0
+
+            while True:
+                page += 1
+                if added >= quota or len(articles) >= TARGET:
+                    break
+
+                log_fetch(portal_name, f"{index_base}?page={page}&date={date_param}")
+                headers = {
+                    "User-Agent": random.choice(USER_AGENTS),
+                    "Accept-Language": "id,en;q=0.9",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
                 try:
-                    root = ET.fromstring(xml_content)
-                except ET.ParseError: continue
-                    
-                for child in root:
-                    tag_name = child.tag.split("}")[-1]
-                    
-                    if tag_name == "sitemap":
-                        loc_elem = child.find("{*}loc")
-                        if loc_elem is not None and loc_elem.text:
-                            sub_url = loc_elem.text.strip().lower()
-                            
-                            has_year = any(yr in sub_url for yr in ["2022", "2023", "2024", "2025", "2026"])
-                            has_structural_match = any(sec in sub_url for sec in config["sitemap_filters"])
-                            
-                            if has_year or has_structural_match or len(visited_sitemaps) < 15:
-                                if loc_elem.text.strip() not in visited_sitemaps and loc_elem.text.strip() not in sitemap_queue:
-                                    sitemap_queue.append(loc_elem.text.strip())
-                                    
-                    elif tag_name == "url":
-                        loc_elem = child.find("{*}loc")
-                        if loc_elem is not None and loc_elem.text:
-                            url = loc_elem.text.strip()
-                            if url in seen_urls: continue
-                            
-                            # URL validation - must be a proper article URL
-                            parsed_url = urllib.parse.urlparse(url)
-                            path_parts = [p for p in parsed_url.path.split('/') if p]
-                            
-                            # Skip homepage, category pages, and invalid URLs
-                            if (len(path_parts) < 2 or  # Too short to be an article
-                                url.endswith('/') or  # Directory/category page
-                                not any(char.isalnum() for char in parsed_url.path) or  # No content in path
-                                len(parsed_url.path) < 10):  # Path too short
+                    await asyncio.sleep(random.uniform(1.2, 2.5))
+                    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+                        res = await client.get(
+                            index_base,
+                            params={"page": page, "date": date_param},
+                            headers=headers,
+                        )
+                    if res.status_code != 200:
+                        print(f"[INDEX] ERROR: {portal_name} | {channel} page={page} | HTTP {res.status_code}", flush=True)
+                        break
+
+                    soup = BeautifulSoup(res.text, "html.parser")
+                    links = (
+                        soup.select("div.list-content__item a[href*='/d-']")
+                        or soup.select("article a[href*='/d-']")
+                        or soup.select(".media__text a[href*='/d-']")
+                        or soup.select(".list-content a[href*='/d-']")
+                        or soup.select('a[href*="/d-"]')
+                    )
+                    page_items = {}
+                    for link in links:
+                        raw_href = link.get("href")
+                        if not raw_href:
+                            continue
+                        art_url = urllib.parse.urljoin(origin, raw_href).split("?")[0].strip()
+                        if host not in art_url:
+                            continue
+                        txt = clean_title(re.sub(r"\s+", " ", link.get_text()).strip()) or ""
+                        if art_url not in page_items or len(txt) > len(page_items[art_url]):
+                            page_items[art_url] = txt
+
+                    page_urls = set(page_items)
+                    if not page_urls:
+                        print(f"[INDEX] {portal_name} | {channel} Date={date_iso} page={page} | empty → next channel", flush=True)
+                        break
+                    if page_urls == prev_page_urls and prev_page_urls is not None:
+                        print(f"[INDEX] {portal_name} | {channel} Date={date_iso} page={page} | exact repeat → next channel", flush=True)
+                        break
+                    prev_page_urls = page_urls
+                    seen_this_date |= page_urls
+
+                    new = 0
+                    raw_links = len(page_items)
+                    for art_url, title_text in page_items.items():
+                        if added >= quota or len(articles) >= TARGET:
+                            break
+                        f["candidates"] += 1
+                        if not title_text:
+                            continue
+                        if any(w in title_text.lower() for w in POLLING_WORDS):
+                            continue
+                        if art_url in seen_urls or title_text.lower() in seen_titles:
+                            f["duplicate"] += 1
+                            continue
+                        m = re.search(r"/(\d{4})/(\d{2})/(\d{2})", art_url)
+                        dstr = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else date_iso
+                        if not within_window(dstr):
+                            f["date_rejected"] += 1
+                            continue
+                        if not title_has_keyword(title_text, keywords):
+                            f["keyword_rejected"] += 1
+                            continue
+                        record_article(articles, seen_urls, seen_titles, f, bar,
+                                        "Detik", art_url, title_text, dstr)
+                        added += 1
+                        new += 1
+
+                    log_result(portal_name, channel, date_iso, page, raw_links, new, len(articles))
+                    if new == 0 and page > 1:
+                        break
+                except Exception as e:
+                    print(f"[DETIK] error {channel} {date_iso} page={page}: {e}", flush=True)
+                    break
+
+        current -= timedelta(days=1)
+        state["last_date"] = current
+
+    if current < MIN_DATE:
+        state["exhausted"] = True
+    state["collected"] += added
+    return added
+
+
+# ==========================================
+# CNN  (original logs preserved)
+# ==========================================
+def scrape_cnn_batch(cfg, articles, seen_urls, seen_titles, state, quota, bar, funnel):
+    if state["exhausted"] or quota <= 0:
+        return 0
+
+    portal_name = "CNN Indonesia"
+    f = funnel
+    keywords = cfg["keywords"]
+    section = cfg["cnn_section"]
+    base = f"https://www.cnnindonesia.com/{cfg['cnn_indeks']}"
+    added = 0
+    current = state["last_date"]
+
+    print(f"\n[CNN] Starting (date+page method)...", flush=True)
+
+    while current >= MIN_DATE and added < quota and len(articles) < TARGET:
+        date_slash = current.strftime("%Y/%m/%d")
+        date_iso = current.strftime("%Y-%m-%d")
+        page = 1
+        empty_streak = 0
+
+        while added < quota and len(articles) < TARGET and empty_streak < 2:
+            url = f"{base}?date={date_slash}&page={page}"
+            log_fetch(portal_name, url)
+            headers = {"User-Agent": random.choice(USER_AGENTS), "Accept-Language": "id,en;q=0.9"}
+            try:
+                time.sleep(random.uniform(1.0, 2.0))
+                res = requests.get(url, headers=headers, timeout=12)
+                if res.status_code != 200 or "gokuProps" in (res.text or "")[:1500]:
+                    print(f"[INDEX] {portal_name} | Date={date_iso} Page={page} | blocked/empty (HTTP {res.status_code})", flush=True)
+                    empty_streak += 1
+                    page += 1
+                    continue
+
+                soup = BeautifulSoup(res.content, "html.parser")
+                # broader selectors – CNN index is inconsistent
+                article_nodes = (
+                    soup.select("article")
+                    or soup.select(".list-content article")
+                    or soup.select(".media__text")
+                    or soup.select("div[class*='list'] a[href]")
+                )
+                seen_in_page = set()
+                candidate_anchors = []
+                if article_nodes and hasattr(article_nodes[0], "find_all"):
+                    for node in article_nodes:
+                        for a in node.find_all("a", href=True):
+                            h = a["href"].split("?")[0]
+                            if h not in seen_in_page:
+                                seen_in_page.add(h)
+                                candidate_anchors.append(a)
+                else:
+                    # fallback: any link that looks like article
+                    for a in soup.select(f'a[href*="{section}"]'):
+                        h = a["href"].split("?")[0]
+                        if h not in seen_in_page and re.search(r"/\d{4}/\d{2}/", h):
+                            seen_in_page.add(h)
+                            candidate_anchors.append(a)
+
+                if not candidate_anchors:
+                    log_result(portal_name, "", date_iso, page, 0, 0, len(articles))
+                    empty_streak += 1
+                    page += 1
+                    continue
+
+                new = 0
+                raw_links = 0
+                for a in candidate_anchors:
+                    if added >= quota or len(articles) >= TARGET:
+                        break
+                    href = a["href"].split("?")[0]
+                    if section not in href:
+                        continue
+                    raw_links += 1
+                    f["candidates"] += 1
+
+                    # prefer <h2> inside article (clean title), fallback to link text
+                    title_el = None
+                    parent = a.find_parent("article") or a.find_parent(class_=re.compile(r"flex|media|list"))
+                    if parent:
+                        title_el = parent.find("h2") or parent.find("h3")
+                    if title_el:
+                        title_text = clean_title(title_el.get_text(strip=True))
+                    else:
+                        title_text = clean_title(re.sub(r"\s+", " ", a.get_text()).strip())
+                    if not title_text:
+                        continue
+                    if href in seen_urls or title_text.lower() in seen_titles:
+                        f["duplicate"] += 1
+                        continue
+                    m = re.search(r"/(\d{4})/(\d{2})/(\d{2})", href)
+                    dstr = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else date_iso
+                    if not within_window(dstr):
+                        f["date_rejected"] += 1
+                        continue
+                    if not title_has_keyword(title_text, keywords):
+                        f["keyword_rejected"] += 1
+                        continue
+                    record_article(articles, seen_urls, seen_titles, f, bar,
+                                   "CNN Indonesia", href, title_text, dstr)
+                    added += 1
+                    new += 1
+
+                log_result(portal_name, "", date_iso, page, raw_links, new, len(articles))
+                if raw_links == 0:
+                    break
+                page += 1
+
+            except Exception as e:
+                print(f"[CNN] error: {e}", flush=True)
+                break
+
+        state["last_date"] = current
+        current -= timedelta(days=1)
+
+    if current < MIN_DATE:
+        state["exhausted"] = True
+    state["collected"] += added
+    return added
+
+
+# ==========================================
+# KOMPAS (original logs preserved)
+# ==========================================
+async def scrape_kompas_batch(cfg, articles, seen_urls, seen_titles, state, quota, bar, funnel):
+    if state["exhausted"] or quota <= 0:
+        return 0
+
+    portal_name = "Kompas"
+    f = funnel
+    keywords = cfg["keywords"]
+    site = cfg["kompas_site"]
+    patterns = cfg.get("kompas_url_patterns") or [f"{cfg['kompas_host']}/read/"]
+    added = 0
+    current = state["last_date"]
+    fails = 0
+
+    print(f"\n[KOMPAS] Starting with Playwright (async)...", flush=True)
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent=random.choice(USER_AGENTS),
+                locale="id-ID",
+                viewport={"width": 1366, "height": 768},
+            )
+            page = await context.new_page()
+
+            while current >= MIN_DATE and added < quota and len(articles) < TARGET and fails < 5:
+                date_iso = current.strftime("%Y-%m-%d")
+                page_num = 1
+
+                while added < quota and len(articles) < TARGET and fails < 5:
+                    url = f"https://indeks.kompas.com/?site={site}&date={date_iso}&page={page_num}"
+                    log_fetch(portal_name, url)
+
+                    try:
+                        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                        await asyncio.sleep(random.uniform(2, 3))
+
+                        prev = 0
+                        for _ in range(6):
+                            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await asyncio.sleep(1.2)
+                            cur = await page.evaluate('document.querySelectorAll(\'a[href*="/read/"]\').length')
+                            if cur == prev:
+                                break
+                            prev = cur
+                        await page.evaluate("window.scrollTo(0, 0)")
+                        await asyncio.sleep(0.4)
+
+                        content = await page.content()
+                        if "gokuProps" in content or len(content) < 2000:
+                            fails += 1
+                            print(f"[KOMPAS] blocked {date_iso} p{page_num} ({fails}/5)", flush=True)
+                            break
+
+                        fails = 0
+                        css_sel = ", ".join(f'a[href*="{p}"]' for p in patterns)
+                        links = await page.query_selector_all(css_sel)
+
+                        new = 0
+                        raw_links = 0
+                        seen_in_page = set()
+                        for link in links:
+                            if added >= quota or len(articles) >= TARGET:
+                                break
+                            href = await link.get_attribute("href")
+                            if not href:
                                 continue
-                                
-                            source = self._get_source_name(url)
-                            if not source: continue
-                                
-                            lastmod_text = child.find("{*}lastmod").text.strip() if child.find("{*}lastmod") is not None else ""
-                            pub_date_text = child.find(".//{*}publication_date").text.strip() if child.find(".//{*}publication_date") is not None else ""
-                            xml_title = child.find(".//{*}title").text.strip() if child.find(".//{*}title") is not None else ""
-                            
-                            date_str = self._extract_date(url, lastmod_text, pub_date_text)
-                            if not date_str: continue
-                                
-                            title_str = self._extract_title(url, xml_title, source)
-                            
-                            # Skip if title extraction failed or is too short
-                            if not title_str or len(title_str) < 20:
+                            href = urllib.parse.urljoin("https://indeks.kompas.com/", href).split("?")[0]
+                            if href in seen_in_page:
                                 continue
-                            
-                            # Content filter evaluation
-                            combined_text = f"{url.lower()} {title_str.lower()}"
-                            if not any(keyword in combined_text for keyword in config["content_keywords"]): continue
-                            
-                            # Exclusion filter (if configured)
-                            if "exclusion_keywords" in config:
-                                if any(keyword in combined_text for keyword in config["exclusion_keywords"]): continue
-                            
-                            if title_str.lower() in seen_titles: continue
-                                
-                            seen_urls.add(url)
-                            seen_titles.add(title_str.lower())
-                            
-                            collected_articles.append({
-                                "id": len(collected_articles) + 1,
-                                "source": source,
-                                "date": date_str,
-                                "title": title_str,
-                                "url": url,
-                                "label": ""
-                            })
-                            
-                            progress_bar.update(1)
-                            if len(collected_articles) >= self.target_count: break
-            except Exception:
+                            seen_in_page.add(href)
+                            if not any(p in href for p in patterns):
+                                continue
+                            raw_links += 1
+                            f["candidates"] += 1
+                            if href in seen_urls:
+                                f["duplicate"] += 1
+                                continue
+                            # get title from h2 if exists, else from link text
+                            h2 = await link.query_selector("h2")
+                            if h2:
+                                title_text = clean_title((await h2.inner_text()).strip())
+                            else:
+                                title_text = clean_title((await link.inner_text()).strip())
+                            if not title_text:
+                                continue
+                            if title_text.lower() in seen_titles:
+                                f["duplicate"] += 1
+                                continue
+                            m = re.search(r"/(\d{4})/(\d{2})/(\d{2})", href)
+                            if m:
+                                dstr = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+                                if not within_window(dstr):
+                                    f["date_rejected"] += 1
+                                    continue
+                            else:
+                                dstr = date_iso
+                            if not title_has_keyword(title_text, keywords):
+                                f["keyword_rejected"] += 1
+                                continue
+                            record_article(articles, seen_urls, seen_titles, f, bar,
+                                           "Kompas", href, title_text, dstr)
+                            added += 1
+                            new += 1
+
+                        log_result(portal_name, "", date_iso, page_num, raw_links, new, len(articles))
+                        if raw_links == 0:
+                            break
+                        page_num += 1
+
+                    except Exception as e:
+                        print(f"[KOMPAS] error: {e}", flush=True)
+                        fails += 1
+                        break
+
+                state["last_date"] = current
+                current -= timedelta(days=1)
+
+            await browser.close()
+    except Exception as e:
+        print(f"[KOMPAS] browser failed: {e}", flush=True)
+        state["exhausted"] = True
+
+    if current < MIN_DATE or fails >= 5:
+        state["exhausted"] = True
+    state["collected"] += added
+    return added
+
+
+# ==========================================
+# TRIBUN (original logs preserved)
+# ==========================================
+async def tribun_pub_date(page, url):
+    try:
+        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+        for sel in ('meta[property="article:published_time"]',
+                    'meta[name="content_PublishedDate"]',
+                    'meta[itemprop="datePublished"]'):
+            el = await page.query_selector(sel)
+            if el:
+                v = (await el.get_attribute("content") or "").strip()
+                m = re.match(r"(\d{4})-(\d{2})-(\d{2})", v)
+                if m:
+                    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+        html = await page.content()
+        m = re.search(r'"datePublished"\s*:\s*"(\d{4})-(\d{2})-(\d{2})', html)
+        if m:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    except Exception as e:
+        print(f"[TRIBUN] date fetch error: {e}", flush=True)
+    return None
+
+async def scrape_tribun_batch(cfg, articles, seen_urls, seen_titles, state, quota, bar, funnel):
+    if state["exhausted"] or quota <= 0:
+        return 0
+    portal_name = "Tribun News"
+    f = funnel
+    keywords = cfg["keywords"]
+    marker = cfg["tribun_marker"]
+    added = 0
+    fails = 0
+    OLD_PAGE_STOP = 2       # stop only after N pure-old pages
+
+    chan_state = state.setdefault("channels", {})
+    print(f"\n[TRIBUN] Starting with Playwright (async)...", flush=True)
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent=random.choice(USER_AGENTS),
+                locale="id-ID",
+                viewport={"width": 1366, "height": 768},
+            )
+            page = await context.new_page()
+            art_page = await context.new_page()
+
+            for channel in cfg["tribun_channels"]:
+                cs = chan_state.setdefault(
+                    channel, {"page": 1, "prev": None, "streak": 0, "done": False}
+                )
+                if cs["done"]:
+                    continue
+                if added >= quota or len(articles) >= TARGET or fails >= 5:
+                    break
+
+                page_num = cs["page"]
+                old_page_streak = cs["streak"]
+                prev_page_urls = cs["prev"]
+
+                while (
+                    added < quota
+                    and len(articles) < TARGET
+                    and fails < 5
+                ):
+                    url = f"https://www.tribunnews.com/{channel}?page={page_num}&date=undefined"
+                    log_fetch(portal_name, url)
+                    try:
+                        await page.goto(url, timeout=30000, wait_until="domcontentloaded")
+                        await asyncio.sleep(random.uniform(2.5, 4.0))
+                        # light scroll to trigger lazy content
+                        for _ in range(3):
+                            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await asyncio.sleep(0.8)
+                        content = await page.content()
+                        if "gokuProps" in content or len(content) < 2000:
+                            fails += 1
+                            print(f"[TRIBUN] blocked {channel} page {page_num} ({fails}/5)", flush=True)
+                            continue
+                        fails = 0
+
+                        ART_ID_RE = re.compile(r"/[\w\-]+/\d{5,}/")
+                        links = await page.query_selector_all("a[href]")
+                        seen_in_page = set()
+                        page_urls = set()
+                        new = 0
+                        raw_links = 0
+                        dated_ok = 0
+                        dated_old = 0
+                        dated_new = 0          # > MAX_DATE
+
+                        for link in links:
+                            if added >= quota or len(articles) >= TARGET:
+                                break
+                            href = await link.get_attribute("href")
+                            if not href:
+                                continue
+                            href = urllib.parse.urljoin("https://www.tribunnews.com/", href)
+                            href = href.split("?")[0].split("#")[0]
+                            if href in seen_in_page:
+                                continue
+                            seen_in_page.add(href)
+
+                            if marker not in href:
+                                continue
+                            if not ART_ID_RE.search(href):
+                                continue
+                            if any(x in href for x in ("/tag/", "/topic/", "/index-news/", "/search", "/video/")):
+                                continue
+
+                            raw_links += 1
+                            page_urls.add(href)
+                            f["candidates"] += 1
+
+                            if href in seen_urls:
+                                f["duplicate"] += 1
+                                continue
+                            title_text = clean_title((await link.inner_text()).strip())
+                            if not title_text:
+                                continue
+                            if title_text.lower() in seen_titles:
+                                f["duplicate"] += 1
+                                continue
+                            if not title_has_keyword(title_text, keywords):
+                                f["keyword_rejected"] += 1
+                                continue
+
+                            await asyncio.sleep(random.uniform(0.8, 1.6))
+                            dstr = await tribun_pub_date(art_page, href)
+                            if dstr is None:
+                                f["date_rejected"] += 1
+                                continue
+                            try:
+                                y, m, d = map(int, dstr.split("-"))
+                                art_date = date(y, m, d)
+                            except Exception:
+                                f["date_rejected"] += 1
+                                continue
+
+                            if art_date < MIN_DATE:
+                                f["date_rejected"] += 1
+                                dated_old += 1
+                                continue
+                            if art_date > MAX_DATE:
+                                f["date_rejected"] += 1
+                                dated_new += 1
+                                continue
+                            # inside window
+                            dated_ok += 1
+
+                            record_article(articles, seen_urls, seen_titles, f, bar,
+                                           "Tribun News", href, title_text, dstr)
+                            added += 1
+                            new += 1
+
+                        log_result(portal_name, channel, "-", page_num, raw_links, new, len(articles))
+                        if added >= quota or len(articles) >= TARGET:
+                            break
+
+                        # === STOP CONDITIONS ===
+                        if raw_links == 0:
+                            cs["done"] = True
+                            print(f"[TRIBUN] {channel} page={page_num} empty → channel finished", flush=True)
+                            break
+
+                        if prev_page_urls is not None and page_urls == prev_page_urls:
+                            cs["done"] = True
+                            print(f"[TRIBUN] {channel} page={page_num} == page={page_num-1} → channel finished", flush=True)
+                            break
+                        prev_page_urls = page_urls
+
+                        # only pure-old pages count toward stop
+                        if dated_ok == 0 and dated_old > 0 and dated_new == 0:
+                            old_page_streak += 1
+                            if old_page_streak >= OLD_PAGE_STOP:
+                                cs["done"] = True
+                                print(f"[TRIBUN] {channel} past date window → channel finished", flush=True)
+                                break
+                        else:
+                            old_page_streak = 0
+
+                        page_num += 1
+
+                    except Exception as e:
+                        print(f"[TRIBUN] error: {e}", flush=True)
+                        fails += 1
+
+                if not cs["done"]:
+                    cs["page"] = page_num
+                    cs["prev"] = prev_page_urls
+                    cs["streak"] = old_page_streak
+
+            await browser.close()
+    except Exception as e:
+        print(f"[TRIBUN] browser failed: {e}", flush=True)
+        state["exhausted"] = True
+
+    if fails >= 5:
+        state["exhausted"] = True
+    state["collected"] += added
+
+    if all(chan_state.get(c, {}).get("done") for c in cfg["tribun_channels"]):
+        state["exhausted"] = True
+    return added
+
+# ==========================================
+# RUN ONE DOMAIN (backfill controller)
+# ==========================================
+async def run_domain(domain_key):
+    cfg = DOMAINS[domain_key]
+    articles = []
+    seen_urls = set()
+    seen_titles = set()
+    funnels = {name: new_funnel() for name in PORTAL_ORDER}
+    states = {name: new_portal_state() for name in PORTAL_ORDER}
+    print(f"\n========== Starting {cfg['label']} scraper (Target: {TARGET}) ==========", flush=True)
+    bar = tqdm(total=TARGET, desc=f"Harvesting {cfg['label']}", unit="rows")
+    # Async scrapers only. CNN is synchronous, so it is called directly below.
+    scrapers = {
+        "Detik": scrape_detik_batch,
+        "Kompas": scrape_kompas_batch,
+        "Tribun News": scrape_tribun_batch,
+    }
+    max_rounds = 20          # safety; 4×250=1000 → usually 1-3 rounds enough
+    for round_i in range(1, max_rounds + 1):
+        if len(articles) >= TARGET:
+            break
+        print(f"\n----- ROUND {round_i} | collected={len(articles)}/{TARGET} -----", flush=True)
+        made_progress = False
+        for portal in PORTAL_ORDER:
+            if len(articles) >= TARGET:
+                break
+            st = states[portal]
+            if st["exhausted"]:
                 continue
-                
-        progress_bar.close()
-        
-        # Save output to Excel
-        try:
-            df = pd.DataFrame(collected_articles)
-            df = df[["id", "source", "date", "title", "url", "label"]]  # Reorder columns
-            df.to_excel(config["output_file"], index=False, engine='openpyxl')
-            print(f"[SUCCESS] Saved {len(collected_articles)} rows to {config['output_file']}\n")
-        except Exception as e:
-            print(f"[ERROR] Failed to save Excel output: {e}")
+            remaining_global = TARGET - len(articles)
+            # every round offer full PORTAL_CAP (250) or whatever is still needed
+            quota = min(remaining_global, PORTAL_CAP)
+            if quota <= 0:
+                continue
+            print(
+                f"[{portal}] quota={quota} "
+                f"(portal total {st['collected']}/{PORTAL_CAP}, global {len(articles)}/{TARGET})",
+                flush=True,
+            )
+            if portal == "CNN Indonesia":
+                added = scrape_cnn_batch(
+                    cfg, articles, seen_urls, seen_titles, st, quota, bar, funnels[portal]
+                )
+            else:
+                added = await scrapers[portal](
+                    cfg, articles, seen_urls, seen_titles, st, quota, bar, funnels[portal]
+                )
+            if added > 0:
+                made_progress = True
+        if not made_progress:
+            print("[ENGINE] no portal made progress → stop", flush=True)
+            break
+
+    bar.close()
+
+    print(f"\n[FUNNEL] {cfg['label']} drop-off by portal:", flush=True)
+    for name in PORTAL_ORDER:
+        print_funnel(name, funnels[name])
+
+    # Finalize
+    articles = articles[:TARGET]
+    for i, row in enumerate(articles, 1):
+        row["id"] = i
+
+    os.makedirs("data", exist_ok=True)
+    df = pd.DataFrame(articles, columns=OUTPUT_COLUMNS)
+    df["label"] = pd.NA
+    df.to_csv(cfg["output_file"], index=False)
+    print(f"[SUCCESS] Saved {len(df)} rows → {cfg['output_file']}", flush=True)
+    return df
+
 
 # ==========================================
-# HOW TO RUN THE CONFIGURATIONS
+# ENTRY
 # ==========================================
-if __name__ == "__main__":
-    # Initialize the engine once
-    scraper = UniversalNewsEngine(target_count=1000)
+async def run_all():
+    for key in DOMAINS:
+        await run_domain(key)
 
-    # Profile 1: Technology News (Strict filtering)
-    tech_config = {
-        "domain_label": "Technology",
-        "output_file": "indonesian_tech_dataset.xlsx",
-        "seed_sitemaps": [
-            "https://www.cnnindonesia.com/teknologi/sitemap_web.xml",
-            "https://tekno.kompas.com/sitemap.xml",
-            "https://inet.detik.com/sitemap.xml",
-            "https://www.tempo.co/sitemap_index.xml",
-            "https://www.tribunnews.com/sitemap.xml",
-            # Additional tech sources
-            "https://www.cnnindonesia.com/teknologi/teknologi-informasi/sitemap_web.xml"
-        ],
-        "sitemap_filters": ["teknologi", "tekno", "inet", "gadget", "gawai", "digital", "startup", "techno"],
-        "content_keywords": [
-            # Core tech terms
-            "teknologi", "tekno", "gadget", "gawai", "perangkat", "smartphone", "ponsel", "tablet",
-            # Software & Apps
-            "aplikasi", "software", "perangkat lunak", "program", "platform", "sistem operasi", "android", "ios", "windows",
-            # Internet & Digital
-            "internet", "digital", "website", "situs", "media sosial", "medsos", "facebook", "instagram", "twitter", "tiktok", "youtube",
-            # AI & Advanced Tech
-            "artificial intelligence", "kecerdasan buatan", "machine learning", "robot", "otomasi", "automasi",
-            # Security & Cyber
-            "hacker", "siber", "cyber", "keamanan", "security", "privasi", "enkripsi", "malware", "virus",
-            # Business & Startup
-            "startup", "unicorn", "decacorn", "teknologi finansial", "fintech", "e-commerce", "tokopedia", "shopee", "gojek", "grab",
-            # Crypto & Blockchain
-            "kripto", "cryptocurrency", "bitcoin", "blockchain", "nft", "metaverse",
-            # Telecom & Network
-            "telkomsel", "indosat", "smartfren", "5g", "4g", "jaringan", "provider", "operator",
-            # Government & Regulation (tech-specific)
-            "kominfo", "kementerian komunikasi", "regulasi digital", "literasi digital",
-            # Gaming
-            "game", "gaming", "esport", "mobile legends", "pubg", "free fire", "steam", "playstation", "xbox", "nintendo",
-            # Innovation & Products
-            "inovasi", "teknologi terbaru", "peluncuran", "rilis", "update", "fitur baru", "spesifikasi", "review"
-        ],
-        "exclusion_keywords": [
-            # Weather & Climate (NOT technology)
-            "cuaca", "iklim", "hujan", "kemarau", "el nino", "la nina", "bmkg", "badan meteorologi",
-            "suhu", "temperatur", "angin", "badai", "topan", "siklon", "banjir", "longsor",
-            # Natural Disasters
-            "gempa", "tsunami", "gunung meletus", "erupsi", "bencana alam",
-            # Agriculture & Environment (unless tech-related)
-            "pertanian", "panen", "petani", "sawah", "ladang", "tanaman pangan",
-            # Politics
-            "pemilu", "pilpres", "capres", "partai politik", "dpr", "mpr",
-            # Sports
-            "sepak bola", "liga", "pertandingan", "turnamen", "piala",
-            # Entertainment/Celebrity
-            "artis", "selebriti", "konser", "film", "sinetron",
-            # Health/Medical (unless health tech)
-            "penyakit", "virus corona", "covid", "vaksin", "rumah sakit", "dokter"
-        ]
-    }
 
-    # Profile 2: Political News (Strict filtering)
-    politics_config = {
-        "domain_label": "Politics",
-        "output_file": "indonesian_politics_dataset.xlsx",
-        "seed_sitemaps": [
-            "https://www.cnnindonesia.com/nasional/sitemap_web.xml",
-            "https://www.kompas.com/sitemap.xml",
-            "https://news.detik.com/berita/sitemap_web.xml",
-            "https://www.tempo.co/sitemap_index.xml",
-            "https://www.tribunnews.com/sitemap.xml",
-            # Additional politics sources
-            "https://www.cnnindonesia.com/nasional/politik/sitemap_web.xml",
-            "https://nasional.kompas.com/sitemap.xml"
-        ],
-        "sitemap_filters": ["nasional", "politik", "pemilu", "tag"],
-        "content_keywords": [
-            # Core political terms
-            "politik", "nasional", "pemerintah", "pemerintahan", "negara", "kebijakan", "regulasi",
-            # Elections
-            "pemilu", "pemilihan umum", "pilpres", "pilkada", "pilgub", "pilkada serentak", "pemilihan", "kampanye",
-            # Candidates & Leaders
-            "capres", "cawapres", "calon presiden", "calon wakil presiden", "jokowi", "prabowo", "gibran", "anies", "ganjar", "ridwan kamil", "ahok", "megawati", "sby",
-            # Government Institutions
-            "dpr", "mpr", "dprd", "presiden", "wakil presiden", "menteri", "kementerian", "kabinet", "istana", "senayan",
-            # Political Parties
-            "partai", "parpol", "pdip", "golkar", "gerindra", "demokrat", "pks", "pan", "nasdem", "ppp", "pkb", "perindo",
-            # Electoral Bodies
-            "kpu", "bawaslu", "komisi pemilihan umum", "pengawas pemilu",
-            # Political Issues
-            "koalisi", "oposisi", "demokrasi", "reformasi", "korupsi", "kpk", "komisi pemberantasan korupsi",
-            # Parliament & Legislation
-            "rapat paripurna", "sidang", "undang-undang", "ruu", "peraturan", "legislasi",
-            # Regional Politics
-            "gubernur", "bupati", "walikota", "provinsi", "kabupaten",
-            # Political Events
-            "demonstrasi", "unjuk rasa", "aksi", "orasi", "deklarasi", "konvensi", "kongres"
-        ],
-        "exclusion_keywords": [
-            # Technology
-            "smartphone", "gadget", "aplikasi", "software", "game", "gaming",
-            # Sports
-            "sepak bola", "liga", "pertandingan", "turnamen", "piala", "atlet",
-            # Entertainment
-            "artis", "selebriti", "konser", "film", "sinetron",
-            # Weather
-            "cuaca", "hujan", "kemarau", "bmkg"
-        ]
-    }
+# Example:
+# await run_domain("technology")
+# await run_domain("health")
+# await run_domain("education")
+await run_domain("politics")
+# await run_domain("sport")
+# await run_all()
 
-    # Profile 3: Health News (Enriched keywords for better coverage)
-    health_config = {
-        "domain_label": "Health",
-        "output_file": "indonesian_health_dataset.xlsx",
-        "seed_sitemaps": [
-            "https://www.cnnindonesia.com/gaya-hidup/sitemap_web.xml",
-            "https://health.kompas.com/sitemap.xml",
-            "https://health.detik.com/sitemap.xml",
-            "https://www.tempo.co/sitemap_index.xml",
-            "https://www.tribunnews.com/sitemap.xml",
-            # Additional health sources
-            "https://www.tvonenews.com/lifestyle/kesehatan/sitemap.xml",
-            "https://www.tribunnews.com/kesehatan/sitemap.xml"
-        ],
-        "sitemap_filters": ["kesehatan", "health", "gaya-hidup", "lifestyle", "medis", "tvonenews"],
-        "content_keywords": [
-            # Core health terms (EXPANDED)
-            "kesehatan", "health", "medis", "kedokteran", "rumah sakit", "klinik", "puskesmas",
-            "sehat", "sakit", "penyakit", "gejala", "diagnosis", "kondisi medis",
-            
-            # Diseases & Conditions (EXPANDED)
-            "covid", "corona", "virus", "flu", "demam", "batuk", "pilek", "diare", "mual", "muntah",
-            "diabetes", "hipertensi", "darah tinggi", "jantung", "stroke", "kanker", "tumor",
-            "hepatitis", "tuberkulosis", "tbc", "malaria", "dengue", "demam berdarah", "dbd",
-            "asma", "alergi", "migrain", "sakit kepala", "vertigo", "maag", "asam lambung",
-            "kolesterol", "obesitas", "kegemukan", "kurus", "berat badan",
-            "infeksi", "radang", "peradangan", "luka", "cedera", "patah tulang",
-            
-            # Medical Professionals (EXPANDED)
-            "dokter", "dr", "perawat", "bidan", "apoteker", "tenaga medis", "nakes", "tenaga kesehatan",
-            "spesialis", "ahli", "konsultan", "praktisi", "medis",
-            
-            # Treatment & Medicine (EXPANDED)
-            "obat", "vaksin", "vaksinasi", "imunisasi", "suntik", "injeksi",
-            "terapi", "pengobatan", "perawatan", "operasi", "bedah", "pembedahan",
-            "resep", "dosis", "antibiotik", "vitamin", "suplemen", "herbal", "jamu", "tradisional",
-            "tablet", "kapsul", "sirup", "salep", "krim",
-            
-            # Healthcare System (EXPANDED)
-            "bpjs", "bpjs kesehatan", "asuransi kesehatan", "kemenkes", "kementerian kesehatan", "dinkes",
-            "faskes", "fasilitas kesehatan", "pelayanan kesehatan", "layanan kesehatan",
-            "rawat inap", "rawat jalan", "igd", "ugd", "emergency",
-            
-            # Public Health (EXPANDED)
-            "pandemi", "epidemi", "wabah", "outbreak", "karantina", "isolasi", "lockdown",
-            "protokol kesehatan", "prokes", "masker", "hand sanitizer", "social distancing",
-            "vaksinasi massal", "imunisasi", "screening", "tes kesehatan", "pemeriksaan",
-            
-            # Nutrition & Wellness (EXPANDED)
-            "gizi", "nutrisi", "diet", "makanan sehat", "pola makan", "kalori", "protein", "karbohidrat",
-            "lemak", "serat", "mineral", "air putih", "hidrasi", "dehidrasi",
-            "menu sehat", "resep sehat", "tips sehat", "pola hidup sehat",
-            "olahraga", "aktivitas fisik", "fitness", "yoga", "meditasi", "relaksasi",
-            
-            # Mental Health (EXPANDED)
-            "kesehatan mental", "mental health", "psikologi", "psikiater", "psikolog",
-            "depresi", "stress", "stres", "anxiety", "cemas", "gangguan jiwa", "gangguan mental",
-            "kesehatan jiwa", "konseling", "terapi mental", "burnout",
-            
-            # Maternal & Child Health (EXPANDED)
-            "ibu hamil", "kehamilan", "persalinan", "melahirkan", "bayi", "balita", "anak",
-            "posyandu", "stunting", "tumbuh kembang", "imunisasi anak", "asi", "menyusui",
-            "ibu dan anak", "kesehatan ibu", "kesehatan anak", "pediatri",
-            
-            # Body Parts & Systems (NEW)
-            "mata", "telinga", "hidung", "tenggorokan", "mulut", "gigi", "kulit",
-            "rambut", "kuku", "tulang", "sendi", "otot", "darah", "pembuluh darah",
-            "paru", "paru-paru", "ginjal", "hati", "liver", "lambung", "usus",
-            "otak", "syaraf", "saraf", "jantung", "pankreas",
-            
-            # Symptoms & Signs (NEW)
-            "nyeri", "sakit", "pusing", "lemas", "lelah", "letih", "sesak nafas",
-            "sesak napas", "bengkak", "gatal", "ruam", "bintik merah",
-            
-            # Medical Procedures (NEW)
-            "rontgen", "ct scan", "mri", "usg", "ultrasonografi", "endoskopi",
-            "biopsi", "transfusi", "cuci darah", "dialisis", "kemoterapi", "radioterapi",
-            
-            # Lifestyle & Prevention (NEW)
-            "pencegahan", "preventif", "deteksi dini", "check up", "medical check up",
-            "gaya hidup", "pola hidup", "kebiasaan sehat", "tips kesehatan",
-            "bahaya", "risiko", "faktor risiko", "komplikasi",
-            
-            # Medical Research (EXPANDED)
-            "penelitian medis", "riset kesehatan", "studi", "uji klinis", "clinical trial",
-            "temuan", "penemuan", "inovasi medis", "teknologi medis"
-        ],
-        "exclusion_keywords": [
-            # Politics (keep strict)
-            "pemilu", "pilpres", "capres", "partai", "dpr", "mpr", "kpu", "politik",
-            # Technology (unless health tech - be selective)
-            "smartphone", "gadget", "game", "gaming",
-            # Sports (unless health/fitness related - be selective)
-            "sepak bola", "liga", "pertandingan", "turnamen", "piala", "timnas",
-            # Entertainment
-            "artis", "selebriti", "konser", "film", "sinetron", "musik",
-            # Weather (unless health impact)
-            "cuaca", "bmkg", "el nino"
-        ]
-    }
-
-    # Profile 4: Sports News (Strict filtering)
-    sport_config = {
-        "domain_label": "Sport",
-        "output_file": "indonesian_sport_dataset.xlsx",
-        "seed_sitemaps": [
-            "https://www.cnnindonesia.com/olahraga/sitemap_web.xml",
-            "https://bola.kompas.com/sitemap.xml",
-            "https://sport.detik.com/sitemap.xml",
-            "https://www.tempo.co/sitemap_index.xml",
-            "https://www.tribunnews.com/sitemap.xml",
-            # Additional sport sources
-            "https://www.kompas.com/sports/sitemap.xml",
-            "https://www.tvonenews.com/sport/sitemap.xml",
-            "https://www.tribunnews.com/sport/sitemap.xml"
-        ],
-        "sitemap_filters": ["olahraga", "sport", "bola", "sepakbola", "sports"],
-        "content_keywords": [
-            # Core sports terms
-            "olahraga", "sport", "atlet", "olahragawan", "olahragawati", "pelatih", "coach",
-            # Football/Soccer
-            "sepak bola", "sepakbola", "bola", "football", "soccer", "pemain", "striker", "kiper", "gelandang", "bek",
-            "liga", "pertandingan", "laga", "tanding", "turnamen", "kompetisi", "piala",
-            "timnas", "tim nasional", "garuda", "pssi", "persib", "persija", "arema", "persebaya",
-            "premier league", "liga inggris", "la liga", "serie a", "bundesliga", "liga champions", "champions league",
-            "piala dunia", "world cup", "piala asia", "sea games", "asian games",
-            # Badminton
-            "bulutangkis", "badminton", "pbsi", "all england", "bwf", "thomas cup", "uber cup",
-            "ganda", "tunggal", "smash", "rally",
-            # Basketball
-            "basket", "basketball", "nba", "perbasi", "ibl", "dunk", "three point",
-            # Volleyball
-            "voli", "volleyball", "proliga", "pbvsi", "spike", "block", "libero",
-            # Other Sports
-            "tenis", "tennis", "renang", "swimming", "atletik", "lari", "marathon", "balap", "racing",
-            "tinju", "boxing", "mma", "pencak silat", "silat", "karate", "taekwondo", "judo",
-            "angkat besi", "weightlifting", "senam", "gymnastics", "panahan", "archery",
-            "esport", "e-sport", "mobile legends", "dota", "pubg",
-            # Events & Competitions
-            "olimpiade", "olympic", "pon", "pekan olahraga nasional", "sea games", "asian games", "asean games",
-            # Results & Achievements
-            "juara", "champion", "menang", "kalah", "skor", "score", "gol", "goal", "medali", "emas", "perak", "perunggu",
-            "rekor", "record", "prestasi", "kemenangan", "kekalahan", "hasil pertandingan",
-            # Transfers & Contracts
-            "transfer", "kontrak", "rekrut", "datangkan", "lepas", "pinjam", "loan"
-        ],
-        "exclusion_keywords": [
-            # Politics
-            "pemilu", "pilpres", "capres", "partai", "dpr", "mpr", "kpu", "politik",
-            # Technology (unless sports tech)
-            "smartphone", "gadget", "aplikasi", "software",
-            # Entertainment
-            "artis", "selebriti", "konser", "film", "sinetron",
-            # Weather
-            "cuaca", "hujan", "kemarau", "bmkg", "el nino",
-            # Health (unless sports health)
-            "penyakit", "virus", "covid", "vaksin", "rumah sakit"
-        ]
-    }
-
-    # Profile 5: Education News (Strict filtering to exclude politics)
-    education_config = {
-        "domain_label": "Education",
-        "output_file": "indonesian_education_dataset.xlsx",
-        "seed_sitemaps": [
-            # Additional education sources
-            "https://www.detik.com/edu/sitemap.xml",
-            "https://www.kompas.com/edu/sitemap.xml",
-            "https://www.cnnindonesia.com/nasional/sitemap_web.xml",
-            "https://www.kompas.com/sitemap.xml",
-            "https://news.detik.com/berita/sitemap_web.xml",
-            "https://www.tempo.co/sitemap_index.xml",
-            "https://www.tribunnews.com/sitemap.xml"
-        ],
-        "sitemap_filters": ["pendidikan", "edukasi", "kampus", "sekolah", "universitas", "edu"],
-        "content_keywords": [
-            # Core education terms (MUST HAVE)
-            "pendidikan", "edukasi", "education", "belajar", "pembelajaran", "pengajaran", "mengajar",
-            # Educational Institutions
-            "sekolah", "sd", "smp", "sma", "smk", "madrasah", "pesantren", "pondok",
-            "universitas", "kampus", "perguruan tinggi", "institut", "politeknik", "akademi",
-            "ui", "ugm", "itb", "ipb", "its", "unair", "undip", "unpad", "bina nusantara", "binus",
-            # Students & Teachers
-            "siswa", "murid", "pelajar", "mahasiswa", "mahasiswi", "anak didik",
-            "guru", "dosen", "pengajar", "pendidik", "tenaga pendidik", "kepala sekolah", "rektor", "dekan",
-            # Academic Programs
-            "kurikulum", "silabus", "mata pelajaran", "mapel", "mata kuliah", "jurusan", "prodi", "program studi",
-            "fakultas", "sarjana", "magister", "doktor", "diploma",
-            # Exams & Assessment
-            "ujian", "ujian nasional", "utbk", "sbmptn", "snmptn", "snbp", "snbt",
-            "nilai", "rapor", "ijazah", "sertifikat", "akreditasi", "evaluasi",
-            # Scholarships & Funding
-            "beasiswa", "scholarship", "bantuan pendidikan", "pip", "kip", "bidikmisi",
-            # Government & Policy (Education specific)
-            "kemendikbud", "kemdikbud", "kementerian pendidikan", "nadiem makarim", "mendikbud", "menteri pendidikan",
-            "dinas pendidikan", "diknas", "kebijakan pendidikan",
-            # School Activities
-            "ppdb", "penerimaan peserta didik baru", "pendaftaran", "seleksi", "penerimaan mahasiswa baru", "pmb",
-            "wisuda", "graduation", "kelulusan", "lulus", "alumni",
-            "ospek", "orientasi", "mpls", "masa pengenalan lingkungan sekolah",
-            # Learning Methods
-            "daring", "luring", "hybrid", "blended learning", "e-learning",
-            "ptm", "pembelajaran tatap muka", "kelas online", "zoom", "google classroom",
-            # Educational Issues
-            "literasi", "numerasi", "asesmen", "kompetensi", "karakter", "pendidikan karakter",
-            "bullying", "perundungan",
-            # Vocational & Skills
-            "vokasi", "kejuruan", "pelatihan", "keterampilan", "skill",
-            # Research & Innovation
-            "penelitian", "riset", "karya ilmiah", "skripsi", "tesis", "disertasi", "jurnal", "publikasi"
-        ],
-        "exclusion_keywords": [
-            # Political terms to exclude
-            "pemilu", "pilpres", "pilkada", "pilgub", "capres", "cawapres", "kampanye",
-            "partai", "parpol", "pdip", "golkar", "gerindra", "demokrat", "pks", "pan", "nasdem",
-            "koalisi", "oposisi", "dpr", "mpr", "dprd", "kpu", "bawaslu",
-            "jokowi", "prabowo", "gibran", "anies", "ganjar", "megawati",
-            "demonstrasi", "unjuk rasa", "aksi massa", "orasi politik",
-            "pemilihan umum", "calon presiden", "calon wakil presiden",
-            "rapat paripurna", "sidang dpr", "fraksi", "legislasi politik",
-            # Crime/Violence (non-educational)
-            "korupsi", "kpk", "penangkapan", "tersangka", "terdakwa", "pengadilan",
-            "pembunuhan", "pencurian", "perampokan", "penipuan",
-            # Sports (to avoid confusion)
-            "sepak bola", "sepakbola", "liga", "pertandingan", "turnamen", "piala",
-            "timnas", "atlet", "pelatih", "juara", "medali",
-            # Entertainment/Celebrity
-            "artis", "selebriti", "konser", "film", "sinetron"
-        ]
-    }
-
-    # Execute all 5 profiles sequentially
-    scraper.run_harvest(tech_config)
-    scraper.run_harvest(politics_config)
-    scraper.run_harvest(health_config)
-    scraper.run_harvest(sport_config)
-    scraper.run_harvest(education_config)
+# if __name__ == "__main__":
+#     asyncio.run(run_domain("technology"))

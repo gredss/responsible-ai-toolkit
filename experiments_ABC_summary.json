@@ -1,0 +1,621 @@
+{
+  "A": {
+    "pair_mode": "A",
+    "elapsed_seconds": 19.063689947128296,
+    "convergence": {
+      "rhat_max": 1.0015844352719572,
+      "ess_bulk_min": 2003.3059121672557,
+      "ess_tail_min": 2871.503715046882,
+      "n_divergences": 1,
+      "converged": false,
+      "warnings": [
+        "1 divergent transition(s). Increase target_accept (try 0.95)."
+      ]
+    },
+    "ppc": {
+      "observed": {
+        "mean": 0.850202070745473,
+        "std": 0.09270482377748332,
+        "min": 0.3774327071932949,
+        "max": 0.9983333333333333,
+        "q10": 0.7271407621498408,
+        "q90": 0.9479072579064564
+      },
+      "predicted": {
+        "mean": 0.8497401927920512,
+        "std": 0.09321869058500822,
+        "min": 0.5173261417731054,
+        "max": 0.9973730736230589,
+        "q10": 0.7214885052196419,
+        "q90": 0.9579451144135069
+      },
+      "bayesian_p_values": {
+        "mean": 0.463625,
+        "std": 0.536875,
+        "min": 0.996125,
+        "max": 0.424375,
+        "q10": 0.31525,
+        "q90": 0.984875
+      },
+      "ppc_extremeness": {
+        "mean": 0.92725,
+        "std": 0.92625,
+        "min": 0.00775,
+        "max": 0.84875,
+        "q10": 0.6305,
+        "q90": 0.03025
+      },
+      "extreme_statistics": [
+        "min",
+        "q90",
+        "source_target_pair_structure"
+      ],
+      "n_outside_95": 9,
+      "source_target_structure": {
+        "statistic": "SD over (source,target) pairs of mean residual",
+        "obs_mean": 0.033691463211980806,
+        "rep_mean": 0.014970808816129264,
+        "p_rep_ge_obs": 0.0
+      }
+    },
+    "contrasts": {
+      "model_base_vs_large": {
+        "mean": -0.016746932954861085,
+        "ci_95_lower": -0.029756254389488587,
+        "ci_95_upper": -0.0037023912917498233,
+        "prob_positive": 0.00625,
+        "prob_negative": 0.99375
+      },
+      "model_base_vs_lite": {
+        "mean": 0.06395310380376464,
+        "ci_95_lower": 0.04962012571691709,
+        "ci_95_upper": 0.0786035644493618,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "model_large_vs_lite": {
+        "mean": 0.08070003675862572,
+        "ci_95_lower": 0.06639860979200006,
+        "ci_95_upper": 0.09508358186982935,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "in_domain_vs_cross_domain": {
+        "mean": 0.09025015922707012,
+        "ci_95_lower": 0.07831761480643112,
+        "ci_95_upper": 0.10168010213889354,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "clean_vs_low": {
+        "mean": 0.013635376462426017,
+        "ci_95_lower": -0.0025644489707705026,
+        "ci_95_upper": 0.02951345472249735,
+        "prob_positive": 0.951125,
+        "prob_negative": 0.048875
+      },
+      "clean_vs_medium": {
+        "mean": 0.013087914507002725,
+        "ci_95_lower": -0.0030281853168298567,
+        "ci_95_upper": 0.02905198389141087,
+        "prob_positive": 0.943875,
+        "prob_negative": 0.056125
+      },
+      "clean_vs_high": {
+        "mean": 0.0421327573623334,
+        "ci_95_lower": 0.02545814370282703,
+        "ci_95_upper": 0.05895786855718317,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "low_vs_medium": {
+        "mean": -0.0005474619554232911,
+        "ci_95_lower": -0.01674147037395126,
+        "ci_95_upper": 0.015376831093347875,
+        "prob_positive": 0.475125,
+        "prob_negative": 0.524875
+      },
+      "medium_vs_high": {
+        "mean": 0.02904484285533068,
+        "ci_95_lower": 0.012414384089093155,
+        "ci_95_upper": 0.04551144230999954,
+        "prob_positive": 0.999375,
+        "prob_negative": 0.000625
+      },
+      "interaction_degradation_base_vs_large_at_low": {
+        "mean": -0.0016187317739231205,
+        "ci_95_lower": -0.03710111835651984,
+        "ci_95_upper": 0.03380935079971179,
+        "prob_positive": 0.459875,
+        "prob_negative": 0.540125
+      },
+      "interaction_degradation_base_vs_large_at_medium": {
+        "mean": -0.0062052094872809965,
+        "ci_95_lower": -0.04160104424086858,
+        "ci_95_upper": 0.028920465083675555,
+        "prob_positive": 0.369375,
+        "prob_negative": 0.630625
+      },
+      "interaction_degradation_base_vs_large_at_high": {
+        "mean": -0.013551499607184004,
+        "ci_95_lower": -0.05037567743729852,
+        "ci_95_upper": 0.022974234757258478,
+        "prob_positive": 0.2315,
+        "prob_negative": 0.7685
+      },
+      "interaction_degradation_base_vs_lite_at_low": {
+        "mean": -0.01872027921641577,
+        "ci_95_lower": -0.05650685177775337,
+        "ci_95_upper": 0.01923133175842323,
+        "prob_positive": 0.172375,
+        "prob_negative": 0.827625
+      },
+      "interaction_degradation_base_vs_lite_at_medium": {
+        "mean": -0.037334497207058004,
+        "ci_95_lower": -0.07706435382989726,
+        "ci_95_upper": 0.0010940823169430633,
+        "prob_positive": 0.028875,
+        "prob_negative": 0.971125
+      },
+      "interaction_degradation_base_vs_lite_at_high": {
+        "mean": -0.07941355651068246,
+        "ci_95_lower": -0.12146927531196205,
+        "ci_95_upper": -0.0389008586960538,
+        "prob_positive": 0.0,
+        "prob_negative": 1.0
+      },
+      "interaction_degradation_large_vs_lite_at_low": {
+        "mean": -0.01710154744249265,
+        "ci_95_lower": -0.05461398986426249,
+        "ci_95_upper": 0.02024291713957133,
+        "prob_positive": 0.187125,
+        "prob_negative": 0.812875
+      },
+      "interaction_degradation_large_vs_lite_at_medium": {
+        "mean": -0.031129287719777018,
+        "ci_95_lower": -0.0685660000034579,
+        "ci_95_upper": 0.00599380136395321,
+        "prob_positive": 0.051625,
+        "prob_negative": 0.948375
+      },
+      "interaction_degradation_large_vs_lite_at_high": {
+        "mean": -0.06586205690349846,
+        "ci_95_lower": -0.10483123923688636,
+        "ci_95_upper": -0.026614617286976,
+        "prob_positive": 0.000625,
+        "prob_negative": 0.999375
+      },
+      "interaction_scenario_degradation_at_low": {
+        "mean": 0.00885534630703049,
+        "ci_95_lower": -0.02154739822114933,
+        "ci_95_upper": 0.039194322347824787,
+        "prob_positive": 0.71825,
+        "prob_negative": 0.28175
+      },
+      "interaction_scenario_degradation_at_medium": {
+        "mean": -0.021244115950565072,
+        "ci_95_lower": -0.05012058630776833,
+        "ci_95_upper": 0.00724302840054558,
+        "prob_positive": 0.072375,
+        "prob_negative": 0.927625
+      },
+      "interaction_scenario_degradation_at_high": {
+        "mean": -0.004877573614075311,
+        "ci_95_lower": -0.03785906538265793,
+        "ci_95_upper": 0.028351916657734594,
+        "prob_positive": 0.3855,
+        "prob_negative": 0.6145
+      }
+    }
+  },
+  "B": {
+    "pair_mode": "B",
+    "elapsed_seconds": 26.854180097579956,
+    "convergence": {
+      "rhat_max": 1.0023255595722165,
+      "ess_bulk_min": 3199.5779204268024,
+      "ess_tail_min": 4215.5314089135545,
+      "n_divergences": 0,
+      "converged": true,
+      "warnings": []
+    },
+    "ppc": {
+      "observed": {
+        "mean": 0.850202070745473,
+        "std": 0.09270482377748332,
+        "min": 0.3774327071932949,
+        "max": 0.9983333333333333,
+        "q10": 0.7271407621498408,
+        "q90": 0.9479072579064564
+      },
+      "predicted": {
+        "mean": 0.8496155417157952,
+        "std": 0.0915818821646098,
+        "min": 0.5142172717752622,
+        "max": 0.9980995995506328,
+        "q10": 0.7247284577686903,
+        "q90": 0.9546626315214952
+      },
+      "bayesian_p_values": {
+        "mean": 0.435125,
+        "std": 0.37075,
+        "min": 0.9975,
+        "max": 0.573375,
+        "q10": 0.4115,
+        "q90": 0.943625
+      },
+      "ppc_extremeness": {
+        "mean": 0.87025,
+        "std": 0.7415,
+        "min": 0.005,
+        "max": 0.85325,
+        "q10": 0.823,
+        "q90": 0.11275
+      },
+      "extreme_statistics": [
+        "min"
+      ],
+      "n_outside_95": 6,
+      "source_target_structure": {
+        "statistic": "SD over (source,target) pairs of mean residual",
+        "obs_mean": 0.011562803091511014,
+        "rep_mean": 0.0113728544355077,
+        "p_rep_ge_obs": 0.465
+      }
+    },
+    "contrasts": {
+      "model_base_vs_large": {
+        "mean": -0.015709189473605258,
+        "ci_95_lower": -0.025944861346922473,
+        "ci_95_upper": -0.005466657520444363,
+        "prob_positive": 0.00125,
+        "prob_negative": 0.99875
+      },
+      "model_base_vs_lite": {
+        "mean": 0.06738821604915851,
+        "ci_95_lower": 0.055951201649701535,
+        "ci_95_upper": 0.07917329479121686,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "model_large_vs_lite": {
+        "mean": 0.08309740552276378,
+        "ci_95_lower": 0.07187276923251067,
+        "ci_95_upper": 0.0943500567605265,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "in_domain_vs_cross_domain": {
+        "mean": 0.08954315420874068,
+        "ci_95_lower": 0.08040677504140223,
+        "ci_95_upper": 0.0985330732215386,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "clean_vs_low": {
+        "mean": 0.011729200142194614,
+        "ci_95_lower": -0.000401345132781347,
+        "ci_95_upper": 0.02391388133972415,
+        "prob_positive": 0.97,
+        "prob_negative": 0.03
+      },
+      "clean_vs_medium": {
+        "mean": 0.01248252210578467,
+        "ci_95_lower": 0.00024481829427565945,
+        "ci_95_upper": 0.024787335603861812,
+        "prob_positive": 0.977125,
+        "prob_negative": 0.022875
+      },
+      "clean_vs_high": {
+        "mean": 0.041518499365532,
+        "ci_95_lower": 0.02857166371448831,
+        "ci_95_upper": 0.054098089228869876,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "low_vs_medium": {
+        "mean": 0.0007533219635900568,
+        "ci_95_lower": -0.011767546028646925,
+        "ci_95_upper": 0.013226060104261222,
+        "prob_positive": 0.5485,
+        "prob_negative": 0.4515
+      },
+      "medium_vs_high": {
+        "mean": 0.029035977259747332,
+        "ci_95_lower": 0.01603106241932603,
+        "ci_95_upper": 0.04192246494586773,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "interaction_degradation_base_vs_large_at_low": {
+        "mean": -0.0027695561222112184,
+        "ci_95_lower": -0.030110483101295802,
+        "ci_95_upper": 0.02482475383098489,
+        "prob_positive": 0.415875,
+        "prob_negative": 0.584125
+      },
+      "interaction_degradation_base_vs_large_at_medium": {
+        "mean": -0.006777856331689053,
+        "ci_95_lower": -0.03419546010078983,
+        "ci_95_upper": 0.0201624694491869,
+        "prob_positive": 0.321625,
+        "prob_negative": 0.678375
+      },
+      "interaction_degradation_base_vs_large_at_high": {
+        "mean": -0.016532708520604428,
+        "ci_95_lower": -0.044502249728982195,
+        "ci_95_upper": 0.011404818932560326,
+        "prob_positive": 0.123625,
+        "prob_negative": 0.876375
+      },
+      "interaction_degradation_base_vs_lite_at_low": {
+        "mean": -0.0183662368527173,
+        "ci_95_lower": -0.04846602075960191,
+        "ci_95_upper": 0.011613922004634623,
+        "prob_positive": 0.119125,
+        "prob_negative": 0.880875
+      },
+      "interaction_degradation_base_vs_lite_at_medium": {
+        "mean": -0.03939334377626057,
+        "ci_95_lower": -0.07011162917256537,
+        "ci_95_upper": -0.0087037240403947,
+        "prob_positive": 0.007125,
+        "prob_negative": 0.992875
+      },
+      "interaction_degradation_base_vs_lite_at_high": {
+        "mean": -0.08169625811817367,
+        "ci_95_lower": -0.11353273711154127,
+        "ci_95_upper": -0.05014494196678777,
+        "prob_positive": 0.0,
+        "prob_negative": 1.0
+      },
+      "interaction_degradation_large_vs_lite_at_low": {
+        "mean": -0.015596680730506083,
+        "ci_95_lower": -0.044972227873328004,
+        "ci_95_upper": 0.013367202053270652,
+        "prob_positive": 0.1545,
+        "prob_negative": 0.8455
+      },
+      "interaction_degradation_large_vs_lite_at_medium": {
+        "mean": -0.03261548744457152,
+        "ci_95_lower": -0.0618029738162004,
+        "ci_95_upper": -0.002553936917365381,
+        "prob_positive": 0.017,
+        "prob_negative": 0.983
+      },
+      "interaction_degradation_large_vs_lite_at_high": {
+        "mean": -0.06516354959756925,
+        "ci_95_lower": -0.09628403413535747,
+        "ci_95_upper": -0.03417926143755683,
+        "prob_positive": 0.0,
+        "prob_negative": 1.0
+      },
+      "interaction_scenario_degradation_at_low": {
+        "mean": -0.0005656643214928488,
+        "ci_95_lower": -0.02553263282943699,
+        "ci_95_upper": 0.024016677154704215,
+        "prob_positive": 0.480875,
+        "prob_negative": 0.519125
+      },
+      "interaction_scenario_degradation_at_medium": {
+        "mean": -0.02010220304421797,
+        "ci_95_lower": -0.043328369299767355,
+        "ci_95_upper": 0.0032883058568385355,
+        "prob_positive": 0.04725,
+        "prob_negative": 0.95275
+      },
+      "interaction_scenario_degradation_at_high": {
+        "mean": -0.016478985386908767,
+        "ci_95_lower": -0.04189429486663936,
+        "ci_95_upper": 0.009248492896373924,
+        "prob_positive": 0.1055,
+        "prob_negative": 0.8945
+      }
+    }
+  },
+  "C": {
+    "pair_mode": "C",
+    "elapsed_seconds": 27.13807487487793,
+    "convergence": {
+      "rhat_max": 1.0018542350697934,
+      "ess_bulk_min": 3487.0630015007087,
+      "ess_tail_min": 4293.958435358642,
+      "n_divergences": 0,
+      "converged": true,
+      "warnings": []
+    },
+    "ppc": {
+      "observed": {
+        "mean": 0.850202070745473,
+        "std": 0.09270482377748332,
+        "min": 0.3774327071932949,
+        "max": 0.9983333333333333,
+        "q10": 0.7271407621498408,
+        "q90": 0.9479072579064564
+      },
+      "predicted": {
+        "mean": 0.8496338813219907,
+        "std": 0.09170950301769107,
+        "min": 0.51418996387665,
+        "max": 0.9974925283061684,
+        "q10": 0.7244643559477252,
+        "q90": 0.9549110087632148
+      },
+      "bayesian_p_values": {
+        "mean": 0.4325,
+        "std": 0.38425,
+        "min": 0.997875,
+        "max": 0.44025,
+        "q10": 0.403875,
+        "q90": 0.949
+      },
+      "ppc_extremeness": {
+        "mean": 0.865,
+        "std": 0.7685,
+        "min": 0.00425,
+        "max": 0.8805,
+        "q10": 0.80775,
+        "q90": 0.102
+      },
+      "extreme_statistics": [
+        "min"
+      ],
+      "n_outside_95": 8,
+      "source_target_structure": {
+        "statistic": "SD over (source,target) pairs of mean residual",
+        "obs_mean": 0.01162776992043334,
+        "rep_mean": 0.01142956335175246,
+        "p_rep_ge_obs": 0.467875
+      }
+    },
+    "contrasts": {
+      "model_base_vs_large": {
+        "mean": -0.015518165326315614,
+        "ci_95_lower": -0.02562167646141945,
+        "ci_95_upper": -0.005329784535800916,
+        "prob_positive": 0.001125,
+        "prob_negative": 0.998875
+      },
+      "model_base_vs_lite": {
+        "mean": 0.067317258997774,
+        "ci_95_lower": 0.05621604439351033,
+        "ci_95_upper": 0.07869008471060562,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "model_large_vs_lite": {
+        "mean": 0.08283542432408962,
+        "ci_95_lower": 0.0718569274022692,
+        "ci_95_upper": 0.09384297415366134,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "in_domain_vs_cross_domain": {
+        "mean": 0.08983345909470639,
+        "ci_95_lower": 0.08072848426987135,
+        "ci_95_upper": 0.09862601833429799,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "clean_vs_low": {
+        "mean": 0.011982543806275257,
+        "ci_95_lower": -0.0004941540668802534,
+        "ci_95_upper": 0.024195800170477195,
+        "prob_positive": 0.970125,
+        "prob_negative": 0.029875
+      },
+      "clean_vs_medium": {
+        "mean": 0.012491853166567472,
+        "ci_95_lower": 0.0003515107751255992,
+        "ci_95_upper": 0.024595733823830037,
+        "prob_positive": 0.97775,
+        "prob_negative": 0.02225
+      },
+      "clean_vs_high": {
+        "mean": 0.04187861227747326,
+        "ci_95_lower": 0.02875373293352967,
+        "ci_95_upper": 0.05449132675022585,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "low_vs_medium": {
+        "mean": 0.000509309360292215,
+        "ci_95_lower": -0.012030553380206702,
+        "ci_95_upper": 0.013232086975217286,
+        "prob_positive": 0.531375,
+        "prob_negative": 0.468625
+      },
+      "medium_vs_high": {
+        "mean": 0.029386759110905786,
+        "ci_95_lower": 0.016067652426964882,
+        "ci_95_upper": 0.042623487934744186,
+        "prob_positive": 1.0,
+        "prob_negative": 0.0
+      },
+      "interaction_degradation_base_vs_large_at_low": {
+        "mean": -0.0024041190001192828,
+        "ci_95_lower": -0.030622600171805767,
+        "ci_95_upper": 0.02576363759526131,
+        "prob_positive": 0.432875,
+        "prob_negative": 0.567125
+      },
+      "interaction_degradation_base_vs_large_at_medium": {
+        "mean": -0.006841535732224337,
+        "ci_95_lower": -0.03487935111423414,
+        "ci_95_upper": 0.020972429154349683,
+        "prob_positive": 0.31775,
+        "prob_negative": 0.68225
+      },
+      "interaction_degradation_base_vs_large_at_high": {
+        "mean": -0.01631462088785585,
+        "ci_95_lower": -0.04497965049373243,
+        "ci_95_upper": 0.012367678455674115,
+        "prob_positive": 0.131,
+        "prob_negative": 0.869
+      },
+      "interaction_degradation_base_vs_lite_at_low": {
+        "mean": -0.01861128906900234,
+        "ci_95_lower": -0.049237385275955066,
+        "ci_95_upper": 0.01143121333297158,
+        "prob_positive": 0.115625,
+        "prob_negative": 0.884375
+      },
+      "interaction_degradation_base_vs_lite_at_medium": {
+        "mean": -0.039444509766270154,
+        "ci_95_lower": -0.07100139995645935,
+        "ci_95_upper": -0.008278074269289651,
+        "prob_positive": 0.00675,
+        "prob_negative": 0.99325
+      },
+      "interaction_degradation_base_vs_lite_at_high": {
+        "mean": -0.0819344725973592,
+        "ci_95_lower": -0.11377042288531242,
+        "ci_95_upper": -0.05027808069995652,
+        "prob_positive": 0.0,
+        "prob_negative": 1.0
+      },
+      "interaction_degradation_large_vs_lite_at_low": {
+        "mean": -0.01620717006888306,
+        "ci_95_lower": -0.04569300042365395,
+        "ci_95_upper": 0.013740814697697208,
+        "prob_positive": 0.141125,
+        "prob_negative": 0.858875
+      },
+      "interaction_degradation_large_vs_lite_at_medium": {
+        "mean": -0.032602974034045815,
+        "ci_95_lower": -0.06263626122847006,
+        "ci_95_upper": -0.002420493128043793,
+        "prob_positive": 0.01525,
+        "prob_negative": 0.98475
+      },
+      "interaction_degradation_large_vs_lite_at_high": {
+        "mean": -0.06561985170950335,
+        "ci_95_lower": -0.09700983757736238,
+        "ci_95_upper": -0.03508733012973587,
+        "prob_positive": 0.0,
+        "prob_negative": 1.0
+      },
+      "interaction_scenario_degradation_at_low": {
+        "mean": 0.000711397945581353,
+        "ci_95_lower": -0.024537538288304853,
+        "ci_95_upper": 0.025289931896353503,
+        "prob_positive": 0.52575,
+        "prob_negative": 0.47425
+      },
+      "interaction_scenario_degradation_at_medium": {
+        "mean": -0.020149559371942075,
+        "ci_95_lower": -0.043547601703086,
+        "ci_95_upper": 0.003106385773887693,
+        "prob_positive": 0.045625,
+        "prob_negative": 0.954375
+      },
+      "interaction_scenario_degradation_at_high": {
+        "mean": -0.014915649009544124,
+        "ci_95_lower": -0.04104770683749575,
+        "ci_95_upper": 0.011879130101447009,
+        "prob_positive": 0.1295,
+        "prob_negative": 0.8705
+      }
+    }
+  }
+}

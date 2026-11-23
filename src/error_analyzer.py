@@ -297,7 +297,10 @@ class ErrorAnalyzer:
         """
         out: Dict[str, Any] = {}
         for key, data in cross_domain.items():
-            src, tgt = (key.split("->") + ["?", "?"])[:2]
+            if isinstance(key, tuple):
+                src, tgt = key[0], key[1]
+            else:
+                src, tgt = (key.split("->") + ["?", "?"])[:2]
             texts  = data.get("texts") or self._recover_texts(data)
             labels = data.get("true_labels", [])
             preds  = data.get("predictions", [])
@@ -535,7 +538,12 @@ class ErrorAnalyzer:
         print(f"  CROSS-DOMAIN ERROR ANALYSIS  (OOD pairs only)")
         print(SEP)
         for key, data in report.get("cross_domain", {}).items():
-            src, tgt = (key.split("->") + ["?", "?"])[:2]
+            if isinstance(key, tuple):
+                src, tgt = key[0], key[1]
+            else:
+                src, tgt = (key.split("->") + ["?", "?"])[:2]
+            if src == tgt:
+                continue
             if src == tgt:
                 continue
             self._print_domain_block(f"{src} → {tgt}", data)

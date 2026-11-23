@@ -10,7 +10,6 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional
 from sklearn.model_selection import train_test_split
-from transformers import AutoTokenizer, BertTokenizer
 import logging
 
 from debug_logger import (
@@ -19,7 +18,6 @@ from debug_logger import (
     dbg_data_validation,
     dbg_data_split,
     dbg_data_sample_texts,
-    dbg_tokenizer_samples,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,11 +34,11 @@ class DataManager:
         self,
         tokenizer_name: str = "indobenchmark/indobert-base-p1",
         max_length: int = 128,
-        random_seed: int = 42
+        random_seed: int = 42,
     ):
         """
         Initialize the DataManager.
-        
+
         Args:
             tokenizer_name: Name or path of the tokenizer to use
             max_length: Maximum sequence length for tokenization
@@ -52,9 +50,6 @@ class DataManager:
         self.tokenizer = None
         self.raw_data = None
         self.domains = []
-        # Use a per-instance RNG so constructing DataManager does not mutate
-        # the global numpy random state.
-        self._rng = np.random.default_rng(random_seed)
         logger.info(f"DataManager initialized with seed={random_seed}, max_length={max_length}")
 
     @classmethod
@@ -63,7 +58,7 @@ class DataManager:
         dataset_dir: str = "dataset",
         tokenizer_name: str = "indobenchmark/indobert-base-p1",
         max_length: int = 128,
-        random_seed: int = 42
+        random_seed: int = 42,
     ) -> 'DataManager':
         """
         Create a DataManager instance and load all domain CSV files from a directory.
@@ -105,7 +100,11 @@ class DataManager:
             domain_names.append(domain_name)
         
         # Create instance and load datasets
-        manager = cls(tokenizer_name=tokenizer_name, max_length=max_length, random_seed=random_seed)
+        manager = cls(
+            tokenizer_name=tokenizer_name,
+            max_length=max_length,
+            random_seed=random_seed,
+        )
         manager.load_datasets(csv_paths, domain_names)
         
         return manager
@@ -143,7 +142,8 @@ class DataManager:
             if not os.path.exists(path):
                 raise FileNotFoundError(f"CSV file not found: {path}")
             
-            df = pd.read_csv(path)
+            # Raw domain CSVs are semicolon-delimited (id;source;date;title;Label;url).
+            df = pd.read_csv(path, sep=';')
             self._validate_dataframe(df, path)
             
             # Extract domain name from filename if not provided
@@ -302,6 +302,11 @@ class DataManager:
             splits['test'].to_csv(os.path.join(domain_dir, 'test.csv'), index=False)
             
         logger.info(f"Exported all isolated domain splits to {output_dir}")
+
+    def check_splits_preprocess(self, splits_dir: str) -> None:
+        """No-op: preprocessing is fixed to raw headlines (no transformation).
+        Kept so callers don't need to change their call sites."""
+        logger.info(f"check_splits_preprocess: splits at '{splits_dir}' accepted (no preprocessing applied).")
     
     def load_domain_splits( #NEW
         self,
@@ -337,65 +342,6 @@ class DataManager:
                         
         return domain_splits
     
-    def initialize_tokenizer(self) -> None:
-        """Initialize the tokenizer for text preprocessing."""
-        logger.info(f"Initializing tokenizer: {self.tokenizer_name}")
-        self.tokenizer = BertTokenizer.from_pretrained(self.tokenizer_name)
-        print(f"token: {type(self.tokenizer)}")
-        logger.info("Tokenizer initialized successfully")
-    
-    def preprocess_texts(
-        self,
-        texts: List[str],
-        padding: str = "max_length",
-        truncation: bool = True
-    ) -> Dict[str, np.ndarray]:
-        """
-        Preprocess texts using the tokenizer.
-        
-        Args:
-            texts: List of text strings to preprocess
-            padding: Padding strategy ('max_length', 'longest', or False)
-            truncation: Whether to truncate sequences exceeding max_length
-        Returns:
-            Dictionary containing input_ids, attention_mask, and token_type_ids
-        Raises:
-            RuntimeError: If tokenizer not initialized
-        """
-        if self.tokenizer is None:
-            raise RuntimeError("Tokenizer not initialized. Call initialize_tokenizer() first.")
-        
-        logger.info(f"Preprocessing {len(texts)} texts")
-
-        # ── debug: show sample tokenisations before batch encoding ─────────
-        dummy_labels = [0] * len(texts)
-        dbg_tokenizer_samples(
-            tokenizer=self.tokenizer,
-            texts=texts,
-            labels=dummy_labels,
-            max_length=self.max_length,
-        )
-        
-        encodings = self.tokenizer(
-            texts,
-            max_length=self.max_length,
-            padding=padding,
-            truncation=truncation,
-            return_tensors="np"
-        )
-        
-        result = {
-            'input_ids': encodings['input_ids'],
-            'attention_mask': encodings['attention_mask']
-        }
-        
-        if 'token_type_ids' in encodings:
-            result['token_type_ids'] = encodings['token_type_ids']
-        
-        logger.info(f"Preprocessing complete. Shape: {result['input_ids'].shape}")
-        
-        return result
-    
     def get_summary(self) -> Dict:
         """
         Get a summary of the loaded dataset.
@@ -417,54 +363,3 @@ class DataManager:
             "tokenizer": self.tokenizer_name
         }
 
-
-class DatasetValidator:
-    """
-    Utility class for validating dataset integrity and quality.
-    """
-    
-    @staticmethod
-    def validate_balance(df: pd.DataFrame, threshold: float = 0.3) -> bool:
-        """
-        Check if dataset is reasonably balanced.
-        Args:
-            df: DataFrame to validate
-            threshold: Maximum acceptable deviation from 50-50 split
-        Returns:
-            True if balanced within threshold, False otherwise
-        """
-        label_ratio = df['label'].mean()
-        deviation = abs(label_ratio - 0.5)
-        
-        is_balanced = deviation <= threshold
-        
-        if not is_balanced:
-            logger.warning(
-                f"Dataset imbalance detected. Label ratio: {label_ratio:.2%}, "
-                f"deviation: {deviation:.2%}"
-            )
-        
-        return is_balanced
-    
-    @staticmethod
-    def check_text_quality(df: pd.DataFrame) -> Dict[str, int]:
-        """
-        Check for potential text quality issues.
-        Args:
-            df: DataFrame to check
-        Returns:
-            Dictionary with counts of various quality issues
-        """
-        issues = {
-            'empty_texts': (df['text'].str.strip() == '').sum(),
-            'very_short_texts': (df['text'].str.len() < 10).sum(),
-            'very_long_texts': (df['text'].str.len() > 500).sum(),
-            'duplicate_texts': df['text'].duplicated().sum()
-        }
-        
-        for issue_type, count in issues.items():
-            if count > 0:
-                logger.warning(f"Found {count} instances of {issue_type}")
-        
-        return issues
-    
