@@ -88,7 +88,8 @@ def calculate_metrics(y_true, y_pred, y_proba=None) -> Dict[str, Any]:
         except Exception:
             metrics['roc_auc'] = None
 
-    metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred).tolist()
+    # labels=[0, 1] keeps the matrix 2x2 even when a (small, matched) subset holds one class only.
+    metrics['confusion_matrix'] = confusion_matrix(y_true, y_pred, labels=[0, 1]).tolist()
     return metrics
 
 

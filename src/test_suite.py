@@ -6,7 +6,7 @@ or a live model.  Heavy dependencies (torch, transformers) are mocked so the
 suite can run in any CI environment.
 
 Run:
-    cd domain-shift-trustworthy-ai/src
+    cd responsible-ai-toolkit/src
     python -m pytest test_suite.py -v
 
 Or directly:
@@ -180,30 +180,32 @@ from utils import (
     FileManager, Timer, safe_divide, flatten_dict, batch_iterator,
     get_timestamp, reproducibility,
 )
-from data_manager import DataManager, DatasetValidator
+from data_manager import DataManager
 from perturbation_engine import (
     PerturbationEngine,
     SemanticWordSubstitution,
-    TypoCharacterPerturbation,
     IndonesianThesaurus,
     PERTURBATION_INTENSITIES,
-    TYPO_INTENSITIES,
     SIM_MIN,
     SIM_MAX,
     tokenize_words,
 )
 from evaluation_engine import (
-    MetricsCalculator,
-    InDomainEvaluator,
-    CrossDomainEvaluator,
-    PerturbationEvaluator,
+    calculate_metrics,
+    calculate_robustness_metrics,
+    calculate_domain_shift_metrics,
+    calculate_prediction_flip,
+    evaluate_in_domain,
+    evaluate_all_cross_domain_combinations,
     EvaluationEngine,
     PERTURBATION_TYPES,
     PERTURBATION_LEVELS,
 )
 from statistical_analyzer import (
-    BayesianTester, ROPEAnalyzer, SignificanceTester,
-    ComparativeStatistics, StatisticalAnalyzer,
+    assemble_observations,
+    validate_observations,
+    apply_boundary_correction,
+    StatisticalAnalyzer,
 )
 from error_analyzer import (
     ErrorAnalyzer, detect_patterns, attach_texts_to_results,
@@ -301,7 +303,6 @@ def _make_fake_results(domains=None, include_perturbation=True) -> dict:
     #   perturbation[domain] = {
     #       'clean': {...},
     #       'semantic': {'low': {...}, 'medium': {...}, 'high': {...}},
-    #       'typo':     {'low': {...}, 'medium': {...}, 'high': {...}},
     #   }
     # The shared 'clean' baseline lives once at the top of each domain.
     _levels = ["low", "medium", "high"]
@@ -325,12 +326,11 @@ def _make_fake_results(domains=None, include_perturbation=True) -> dict:
     if include_perturbation:
         for d in domains:
             domain_block = {"clean": _level_block(0.75)}
-            for ptype in ["semantic", "typo"]:
+            for ptype in ["semantic"]:
                 domain_block[ptype] = {}
                 for i, lvl in enumerate(_levels):
-                    # F1 decreases as intensity rises; typo drops a bit faster
-                    # so the two mechanisms are distinguishable in tests.
-                    step = 0.05 if ptype == "semantic" else 0.07
+                    # F1 decreases as intensity rises.
+                    step = 0.05
                     domain_block[ptype][lvl] = _level_block(0.75 - step * (i + 1))
             perturbation[d] = domain_block
 
@@ -505,30 +505,52 @@ class TestDataManager(unittest.TestCase):
                 "url":    [f"https://example.com/{i}" for i in range(n)],
             })
             path = os.path.join(tmpdir, f"{domain.lower()}.csv")
-            df.to_csv(path, index=False)
+            df.to_csv(path, index=False, sep=";")  # data_manager reads sep=';'
             paths.append(path)
         return paths
 
+    def _load(self, tmp):
+        """DataManager never touches a tokenizer at load time, so no mock is needed."""
+        paths = self._write_domain_csvs(tmp)
+        dm = DataManager(tokenizer_name="mock", max_length=32, random_seed=42)
+        dm.load_datasets(paths, domain_names=DOMAINS)
+        return dm
+
     def test_load_datasets_basic(self):
         with tempfile.TemporaryDirectory() as tmp:
-            paths = self._write_domain_csvs(tmp)
-            dm = DataManager(tokenizer_name="mock", max_length=32, random_seed=42)
-            with patch("data_manager.AutoTokenizer"):
-                dm.load_datasets(paths, domain_names=DOMAINS)
+            dm = self._load(tmp)
             self.assertEqual(len(dm.raw_data), 150)  # 5 × 30
             self.assertEqual(len(dm.domains), 5)
+            for col in ("text", "label", "domain"):
+                self.assertIn(col, dm.raw_data.columns)
 
     def test_from_dataset_directory_raises_missing(self):
         with self.assertRaises(FileNotFoundError):
-            with patch("data_manager.AutoTokenizer"):
-                DataManager.from_dataset_directory("/nonexistent/dir")
+            DataManager.from_dataset_directory("/nonexistent/dir")
+
+    def test_from_dataset_directory_raises_missing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                DataManager.from_dataset_directory(tmp)   # dir exists, CSVs do not
+
+    def test_load_datasets_rejects_non_binary_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "bad.csv")
+            pd.DataFrame({"id": [1], "source": ["s"], "date": ["d"], "title": ["t"],
+                          "Label": [2], "url": ["u"]}).to_csv(p, sep=";", index=False)
+            with self.assertRaises(ValueError):
+                DataManager().load_datasets([p], domain_names=["X"])
+
+    def test_load_datasets_rejects_missing_columns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "bad.csv")
+            pd.DataFrame({"id": [1], "title": ["t"]}).to_csv(p, sep=";", index=False)
+            with self.assertRaises(ValueError):
+                DataManager().load_datasets([p], domain_names=["X"])
 
     def test_stratified_split_proportions(self):
         with tempfile.TemporaryDirectory() as tmp:
-            paths = self._write_domain_csvs(tmp)
-            dm = DataManager(tokenizer_name="mock", max_length=32, random_seed=42)
-            with patch("data_manager.AutoTokenizer"):
-                dm.load_datasets(paths, domain_names=DOMAINS)
+            dm = self._load(tmp)
             splits = dm.stratified_split_by_domain(
                 train_size=0.70, val_size=0.15, test_size=0.15
             )
@@ -538,12 +560,25 @@ class TestDataManager(unittest.TestCase):
                            + len(splits[domain]["test"]))
                 self.assertEqual(n_total, 30)
 
+    def test_stratified_split_has_no_leakage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dm = self._load(tmp)
+            splits = dm.stratified_split_by_domain()
+            for domain in DOMAINS:
+                ids = [set(splits[domain][s]["id"]) for s in ("train", "val", "test")]
+                self.assertEqual(len(ids[0] & ids[1]), 0)
+                self.assertEqual(len(ids[0] & ids[2]), 0)
+                self.assertEqual(len(ids[1] & ids[2]), 0)
+
+    def test_stratified_split_rejects_bad_proportions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dm = self._load(tmp)
+            with self.assertRaises(ValueError):
+                dm.stratified_split_by_domain(train_size=0.5, val_size=0.5, test_size=0.5)
+
     def test_export_and_load_domain_splits(self):
         with tempfile.TemporaryDirectory() as tmp:
-            paths = self._write_domain_csvs(tmp)
-            dm = DataManager(tokenizer_name="mock", max_length=32, random_seed=42)
-            with patch("data_manager.AutoTokenizer"):
-                dm.load_datasets(paths, domain_names=DOMAINS)
+            dm = self._load(tmp)
             splits = dm.stratified_split_by_domain()
             export_dir = os.path.join(tmp, "splits")
             dm.export_domain_splits(splits, export_dir)
@@ -561,31 +596,13 @@ class TestDataManager(unittest.TestCase):
 
     def test_get_summary_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
-            paths = self._write_domain_csvs(tmp)
-            dm = DataManager(tokenizer_name="mock", max_length=32, random_seed=42)
-            with patch("data_manager.AutoTokenizer"):
-                dm.load_datasets(paths, domain_names=DOMAINS)
+            dm = self._load(tmp)
             s = dm.get_summary()
             for key in ("total_samples", "num_domains", "domains"):
                 self.assertIn(key, s)
 
-    def test_validate_balance(self):
-        df = pd.DataFrame({"label": [0] * 50 + [1] * 50})
-        self.assertTrue(DatasetValidator.validate_balance(df))
-
-    def test_validate_balance_imbalanced(self):
-        df = pd.DataFrame({"label": [0] * 95 + [1] * 5})
-        self.assertFalse(DatasetValidator.validate_balance(df))
-
-    def test_check_text_quality_empty(self):
-        df = pd.DataFrame({"text": ["  ", "hello", "world"]})
-        issues = DatasetValidator.check_text_quality(df)
-        self.assertEqual(issues["empty_texts"], 1)
-
-    def test_check_text_quality_duplicates(self):
-        df = pd.DataFrame({"text": ["hello", "hello", "world"]})
-        issues = DatasetValidator.check_text_quality(df)
-        self.assertEqual(issues["duplicate_texts"], 1)
+    def test_get_summary_before_load(self):
+        self.assertEqual(DataManager().get_summary(), {"status": "No data loaded"})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -623,23 +640,9 @@ class TestPerturbationConstants(unittest.TestCase):
         self.assertAlmostEqual(PERTURBATION_INTENSITIES["medium"], 0.20)
         self.assertAlmostEqual(PERTURBATION_INTENSITIES["high"],   0.30)
 
-    def test_typo_intensities_keys_and_values(self):
-        """Typo mechanism has its own distinct level names and character targets."""
-        self.assertEqual(
-            set(TYPO_INTENSITIES.keys()),
-            {"typo_low", "typo_medium", "typo_high"},
-        )
-        self.assertAlmostEqual(TYPO_INTENSITIES["typo_low"],    0.10)
-        self.assertAlmostEqual(TYPO_INTENSITIES["typo_medium"], 0.30)
-        self.assertAlmostEqual(TYPO_INTENSITIES["typo_high"],   0.50)
-
-    def test_typo_intensities_ordered(self):
-        self.assertLess(TYPO_INTENSITIES["typo_low"], TYPO_INTENSITIES["typo_medium"])
-        self.assertLess(TYPO_INTENSITIES["typo_medium"], TYPO_INTENSITIES["typo_high"])
-
     def test_nested_structure_constants(self):
         """The evaluation engine drives its perturbation loops from these."""
-        self.assertEqual(PERTURBATION_TYPES, ["semantic", "typo"])
+        self.assertEqual(PERTURBATION_TYPES, ["semantic"])
         self.assertEqual(PERTURBATION_LEVELS, ["low", "medium", "high"])
 
     def test_sim_bounds(self):
@@ -708,6 +711,7 @@ class TestPerturbationEngine(unittest.TestCase):
                 "is_same_as_original": result_text == text,
                 "similarity_in_range": True,
                 "perturbation_in_range": words_changed == n_change,
+                "insufficient_eligible_words": False,
                 "similarity_score_mean": 0.88,
                 "similarity_score_min": 0.88,
                 "similarity_score_max": 0.88,
@@ -716,23 +720,6 @@ class TestPerturbationEngine(unittest.TestCase):
 
         stub.perturb_with_metadata.side_effect = _stub_perturb_with_metadata
         engine.perturbation = stub
-
-        # Typo mechanism stub. It reuses the same simple reverse-substitution so
-        # tests do not need a real keyboard/Levenshtein run; it just has to
-        # return the shared contract keys and accept an intensity.
-        typo_stub = MagicMock()
-
-        def _stub_typo_with_metadata(text, intensity, **kwargs):
-            result = _stub_perturb_with_metadata(text, intensity)
-            # Add the honestly-named typo keys the real class returns.
-            result["char_edit_ratio"] = result["actual_ratio_all_words"]
-            result["char_cosine_similarity"] = 0.88
-            result["total_chars"] = len(text)
-            result["typo_operations"] = "substitution"
-            return result
-
-        typo_stub.perturb_with_metadata.side_effect = _stub_typo_with_metadata
-        engine.typo_perturbation = typo_stub
         return engine
 
     def setUp(self):
@@ -789,41 +776,12 @@ class TestPerturbationEngine(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.apply_perturbation("text", "extreme")
 
-    # ── Typo levels route to the typo mechanism ───────────────────────────────
+    # ── Removed typo levels are rejected ──────────────────────────────────────
 
-    def test_typo_levels_use_typo_mechanism(self):
-        """typo_* levels must delegate to the typo perturbation object,
-        NOT the semantic one."""
+    def test_typo_level_is_rejected(self):
         for level in ("typo_low", "typo_medium", "typo_high"):
-            self.engine.perturbation.perturb_with_metadata.reset_mock()
-            self.engine.typo_perturbation.perturb_with_metadata.reset_mock()
-            self.engine.apply_perturbation(SAMPLE_HEADLINES[0], level)
-            # Typo stub called once; semantic stub not called.
-            self.assertEqual(
-                self.engine.typo_perturbation.perturb_with_metadata.call_count, 1
-            )
-            self.assertEqual(
-                self.engine.perturbation.perturb_with_metadata.call_count, 0
-            )
-
-    def test_typo_level_returns_string(self):
-        for text in SAMPLE_HEADLINES:
-            result = self.engine.apply_perturbation(text, "typo_medium")
-            self.assertIsInstance(result, str)
-
-    def test_typo_metadata_has_shared_contract_keys(self):
-        """A typo result must expose the same contract keys the pipeline reads,
-        so the DataFrame/CSV schema stays consistent with the semantic path."""
-        result = self.engine.apply_perturbation_with_metadata(
-            SAMPLE_HEADLINES[0], "typo_low"
-        )
-        for key in (
-            "original_text", "perturbed_text", "perturbation_level",
-            "is_same_as_original", "similarity_in_range",
-            "perturbation_in_range", "actual_ratio_all_words",
-        ):
-            self.assertIn(key, result)
-        self.assertEqual(result["perturbation_level"], "typo_low")
+            with self.assertRaises(ValueError):
+                self.engine.apply_perturbation(SAMPLE_HEADLINES[0], level)
 
     # ── apply_perturbation_with_metadata ─────────────────────────────────────
 
@@ -878,10 +836,9 @@ class TestPerturbationEngine(unittest.TestCase):
 # 5.  EVALUATION ENGINE
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestMetricsCalculator(unittest.TestCase):
+class TestMetricFunctions(unittest.TestCase):
 
     def setUp(self):
-        self.calc = MetricsCalculator()
         self.y_true = np.array([0, 1, 1, 0, 1, 0, 0, 1])
         self.y_pred = np.array([0, 1, 0, 0, 1, 1, 0, 1])
         self.y_proba = np.column_stack([
@@ -890,179 +847,135 @@ class TestMetricsCalculator(unittest.TestCase):
         ])
 
     def test_calculate_metrics_keys(self):
-        m = self.calc.calculate_metrics(self.y_true, self.y_pred, self.y_proba)
+        m = calculate_metrics(self.y_true, self.y_pred, self.y_proba)
         for key in ("accuracy", "macro_precision", "macro_recall", "macro_f1",
-                    "mcc", "roc_auc", "confusion_matrix"):
+                    "mcc", "roc_auc", "confusion_matrix",
+                    "f1_0", "f1_1", "precision_0", "recall_1"):
             self.assertIn(key, m)
 
-    def test_accuracy_range(self):
-        m = self.calc.calculate_metrics(self.y_true, self.y_pred)
+    def test_accuracy_and_f1_range(self):
+        m = calculate_metrics(self.y_true, self.y_pred)
         self.assertGreaterEqual(m["accuracy"], 0.0)
-        self.assertLessEqual(m["accuracy"],    1.0)
-
-    def test_f1_range(self):
-        m = self.calc.calculate_metrics(self.y_true, self.y_pred)
+        self.assertLessEqual(m["accuracy"], 1.0)
         self.assertGreaterEqual(m["macro_f1"], 0.0)
-        self.assertLessEqual(m["macro_f1"],    1.0)
+        self.assertLessEqual(m["macro_f1"], 1.0)
+
+    def test_roc_auc_none_without_proba(self):
+        self.assertIsNone(calculate_metrics(self.y_true, self.y_pred)["roc_auc"])
+
+    def test_roc_auc_present_with_proba(self):
+        auc = calculate_metrics(self.y_true, self.y_pred, self.y_proba)["roc_auc"]
+        self.assertIsNotNone(auc)
+        self.assertGreaterEqual(auc, 0.0)
+        self.assertLessEqual(auc, 1.0)
 
     def test_confusion_matrix_shape(self):
-        m = self.calc.calculate_metrics(self.y_true, self.y_pred)
+        m = calculate_metrics(self.y_true, self.y_pred)
         self.assertEqual(len(m["confusion_matrix"]), 2)
         self.assertEqual(len(m["confusion_matrix"][0]), 2)
 
+    def test_confusion_matrix_2x2_on_single_class_subset(self):
+        """Regression: a matched subset holding one class used to give a 1x1 matrix."""
+        import warnings
+        y = np.array([1, 1, 1, 1])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # sklearn MCC single-label notice
+            m = calculate_metrics(y, y)
+        self.assertEqual(np.array(m["confusion_matrix"]).shape, (2, 2))
+        self.assertEqual(m["confusion_matrix"], [[0, 0], [0, 4]])
+
     def test_perfect_prediction(self):
-        m = self.calc.calculate_metrics(self.y_true, self.y_true)
-        self.assertAlmostEqual(m["accuracy"],  1.0)
-        self.assertAlmostEqual(m["macro_f1"],  1.0)
+        m = calculate_metrics(self.y_true, self.y_true)
+        self.assertAlmostEqual(m["accuracy"], 1.0)
+        self.assertAlmostEqual(m["macro_f1"], 1.0)
 
     def test_robustness_metrics_drop_direction(self):
         clean     = {"accuracy": 0.90, "macro_precision": 0.88, "macro_recall": 0.91, "macro_f1": 0.89}
         perturbed = {"accuracy": 0.75, "macro_precision": 0.73, "macro_recall": 0.76, "macro_f1": 0.74}
-        rob = self.calc.calculate_robustness_metrics(clean, perturbed)
-        self.assertGreater(rob["macro_f1_drop"],   0)   # f1 degraded
-        self.assertGreater(rob["accuracy_drop"],   0)
+        rob = calculate_robustness_metrics(clean, perturbed)
+        self.assertGreater(rob["macro_f1_drop"], 0)
+        self.assertGreater(rob["accuracy_drop"], 0)
+        self.assertIn("macro_f1_drop_pct", rob)
 
     def test_robustness_metrics_no_drop(self):
         m = {"accuracy": 0.80, "macro_precision": 0.80, "macro_recall": 0.80, "macro_f1": 0.80}
-        rob = self.calc.calculate_robustness_metrics(m, m)
+        rob = calculate_robustness_metrics(m, m)
         self.assertAlmostEqual(rob["macro_f1_drop"], 0.0)
 
     def test_domain_shift_sd_td(self):
-        src   = {"accuracy": 0.88, "macro_f1": 0.87, "macro_precision": 0.86, "macro_recall": 0.88}
-        cross = {"accuracy": 0.70, "macro_f1": 0.69, "macro_precision": 0.68, "macro_recall": 0.70}
+        src    = {"accuracy": 0.88, "macro_f1": 0.87, "macro_precision": 0.86, "macro_recall": 0.88}
+        cross  = {"accuracy": 0.70, "macro_f1": 0.69, "macro_precision": 0.68, "macro_recall": 0.70}
         tgt_in = {"accuracy": 0.85, "macro_f1": 0.84, "macro_precision": 0.83, "macro_recall": 0.85}
-        shift = self.calc.calculate_domain_shift_metrics(src, cross, tgt_in)
-        self.assertIn("sd_macro_f1", shift)
-        self.assertIn("td_macro_f1", shift)
-        self.assertGreater(shift["sd_macro_f1"], 0)   # source degraded OOD
-        self.assertGreater(shift["td_macro_f1"], 0)   # target specialist still better
+        shift = calculate_domain_shift_metrics(src, cross, tgt_in)
+        self.assertGreater(shift["sd_macro_f1"], 0)
+        self.assertGreater(shift["td_macro_f1"], 0)
+        self.assertAlmostEqual(shift["sd_macro_f1"], 0.87 - 0.69)
+        self.assertAlmostEqual(shift["td_macro_f1"], 0.84 - 0.69)
 
 
-class TestInDomainEvaluator(unittest.TestCase):
+class TestEvaluateFunctions(unittest.TestCase):
 
-    def test_evaluate_returns_required_keys(self):
-        trainer = _make_fake_trainer()
-        evaluator = InDomainEvaluator(trainer)
-        df = _make_domain_df("Technology", n=40)
-        result = evaluator.evaluate(df, domain="Technology")
+    def test_evaluate_in_domain_keys(self):
+        result = evaluate_in_domain(_make_fake_trainer(), _make_domain_df("Technology", n=40), "Technology")
         for key in ("domain", "num_samples", "metrics", "predictions", "probabilities", "true_labels"):
             self.assertIn(key, result)
 
-    def test_evaluate_sample_count(self):
-        trainer = _make_fake_trainer()
-        evaluator = InDomainEvaluator(trainer)
-        df = _make_domain_df("Health", n=40)
-        result = evaluator.evaluate(df)
+    def test_evaluate_in_domain_sample_count(self):
+        result = evaluate_in_domain(_make_fake_trainer(), _make_domain_df("Health", n=40))
         self.assertEqual(result["num_samples"], 40)
         self.assertEqual(len(result["true_labels"]), 40)
+        self.assertEqual(len(result["predictions"]), 40)
 
+    def test_cross_domain_all_combinations_count(self):
+        trainers = {d: _make_fake_trainer(d) for d in DOMAINS}
+        test_data = {d: _make_domain_df(d, n=20) for d in DOMAINS}
+        results = evaluate_all_cross_domain_combinations(trainers, test_data)
+        self.assertEqual(len(results), 25)
 
-class TestCrossDomainEvaluator(unittest.TestCase):
-
-    def _build_trainers(self):
-        return {d: _make_fake_trainer(d) for d in DOMAINS}
-
-    def test_evaluate_cross_domain_keys(self):
-        trainers = self._build_trainers()
-        ev = CrossDomainEvaluator(trainers)
-        target_df = _make_domain_df("Politics", n=40)
-        result = ev.evaluate_cross_domain("Technology", "Politics", target_df)
+    def test_cross_domain_keys_are_tuples(self):
+        trainers = {d: _make_fake_trainer(d) for d in DOMAINS}
+        test_data = {d: _make_domain_df(d, n=20) for d in DOMAINS}
+        results = evaluate_all_cross_domain_combinations(trainers, test_data)
+        self.assertIn(("Technology", "Politics"), results)
+        entry = results[("Technology", "Politics")]
         for key in ("source_domain", "target_domain", "num_samples", "metrics"):
-            self.assertIn(key, result)
+            self.assertIn(key, entry)
 
-    def test_evaluate_all_combinations_count(self):
-        trainers = self._build_trainers()
-        ev = CrossDomainEvaluator(trainers)
-        test_data = {d: _make_domain_df(d, n=20) for d in DOMAINS}
-        results = ev.evaluate_all_combinations(test_data)
-        self.assertEqual(len(results), 25)  # 5×5
-
-    def test_performance_matrix_shape(self):
-        trainers = self._build_trainers()
-        ev = CrossDomainEvaluator(trainers)
-        test_data = {d: _make_domain_df(d, n=20) for d in DOMAINS}
-        cross = ev.evaluate_all_combinations(test_data)
-        matrix = ev.create_performance_matrix(cross, metric="f1")
-        self.assertEqual(matrix.shape, (5, 5))
-
-    def test_missing_source_raises(self):
-        ev = CrossDomainEvaluator({"Technology": _make_fake_trainer()})
-        with self.assertRaises(ValueError):
-            ev.evaluate_cross_domain("Politics", "Technology", _make_domain_df("Technology"))
+    def test_cross_domain_skips_source_without_trainer(self):
+        test_data = {d: _make_domain_df(d, n=10) for d in ("Technology", "Politics")}
+        results = evaluate_all_cross_domain_combinations(
+            {"Technology": _make_fake_trainer()}, test_data
+        )
+        self.assertEqual(set(results), {("Technology", "Technology"), ("Technology", "Politics")})
 
 
-def _make_stub_perturbation_result(text: str, intensity: float) -> dict:
-    """Return a metadata dict with every key that apply_to_dataframe reads."""
-    words = tokenize_words(text)
-    n = len(words)
-    return {
-        "original_text": text,
-        "perturbed_text": text,
-        "perturbation_level": None,
-        "target_intensity": intensity,
-        "total_words": n,
-        "failed_lookup_words": n,
-        "eligible_words": 0,
-        "target_words": 0,
-        "words_changed": 0,
-        "actual_ratio_all_words": 0.0,
-        "is_same_as_original": True,
-        "similarity_in_range": False,
-        "perturbation_in_range": False,
-        "similarity_score_mean": float("nan"),
-        "similarity_score_min": float("nan"),
-        "similarity_score_max": float("nan"),
-        "replacements": [],
-    }
+class _FakePerturbationEngine:
+    """Minimal stand-in for PerturbationEngine: every row is perturbed successfully."""
 
-
-def _make_stub_engine() -> PerturbationEngine:
-    """PerturbationEngine whose inner stub returns the full metadata dict
-    without touching the thesaurus, IndoBERT, or Sastrawi."""
-    engine = PerturbationEngine.__new__(PerturbationEngine)
-    engine.random_seed = 42
-    engine.sim_min = SIM_MIN
-    engine.sim_max = SIM_MAX
-    stub = MagicMock()
-    stub.perturb_with_metadata.side_effect = _make_stub_perturbation_result
-    engine.perturbation = stub
-    return engine
-
-
-class TestPerturbationEvaluator(unittest.TestCase):
-
-    def _make_stub_engine(self):
-        return _make_stub_engine()
-
-    def test_evaluate_with_perturbation_keys(self):
-        trainer = _make_fake_trainer()
-        engine = self._make_stub_engine()
-        ev = PerturbationEvaluator(trainer, engine)
-        df = _make_domain_df("Sport", n=20)
-        result = ev.evaluate_with_perturbation(df, "low", domain="Sport")
-        for key in ("domain", "perturbation_level", "num_samples", "metrics"):
-            self.assertIn(key, result)
-
-    def test_evaluate_all_levels_keys(self):
-        trainer = _make_fake_trainer()
-        engine = self._make_stub_engine()
-        ev = PerturbationEvaluator(trainer, engine)
-        df = _make_domain_df("Education", n=20)
-        clean = InDomainEvaluator(trainer).evaluate(df)
-        results = ev.evaluate_all_levels(df, clean, domain="Education")
-        for lvl in ("clean", "low", "medium", "high"):
-            self.assertIn(lvl, results)
+    def apply_to_dataframe(self, df, text_column="text", level="low", **_):
+        out = df.copy()
+        out[text_column] = out[text_column].astype(str) + " x"
+        out["is_same_as_original"] = False
+        out["similarity_in_range"] = True
+        out["perturbation_in_range"] = True
+        out["insufficient_eligible_words"] = False
+        out["actual_ratio_all_words"] = 0.2
+        out["similarity_score_mean"] = 0.88
+        out["similarity_score_min"] = 0.85
+        out["similarity_score_max"] = 0.9
+        out["replacements"] = [[{"word_cosine_similarity": 0.88}]] * len(out)
+        return out
 
 
 class TestEvaluationEngine(unittest.TestCase):
 
     def _build_engine(self, tmpdir):
         trainers = {d: _make_fake_trainer(d) for d in DOMAINS}
-        engine = _make_stub_engine()
         return EvaluationEngine(
             model_trainers=trainers,
-            perturbation_engine=engine,
+            perturbation_engine=_FakePerturbationEngine(),
             output_dir=tmpdir,
+            perturbation_output_dir=os.path.join(tmpdir, "perturbed"),
         )
 
     def test_run_complete_evaluation_keys(self):
@@ -1070,30 +983,47 @@ class TestEvaluationEngine(unittest.TestCase):
             ev = self._build_engine(tmp)
             test_data = {d: _make_domain_df(d, n=20) for d in DOMAINS}
             results = ev.run_complete_evaluation(test_data, include_perturbations=False)
-            for key in ("in_domain", "cross_domain", "domains"):
+            for key in ("in_domain", "cross_domain", "domains", "perturbation"):
                 self.assertIn(key, results)
+            self.assertEqual(set(results["in_domain"]), set(DOMAINS))
+            self.assertEqual(len(results["cross_domain"]), 25)
+            self.assertEqual(results["perturbation"], {})
 
     def test_run_complete_evaluation_with_perturbations(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = self._build_engine(tmp)
-            test_data = {d: _make_domain_df(d, n=15) for d in DOMAINS}
+            test_data = {d: _make_domain_df(d, n=16) for d in DOMAINS}
             results = ev.run_complete_evaluation(test_data, include_perturbations=True)
-            self.assertIn("perturbation", results)
-            self.assertEqual(set(results["perturbation"].keys()), set(DOMAINS))
+            self.assertEqual(set(results["perturbation"]), set(DOMAINS))
+            block = results["perturbation"]["Sport"]
+            self.assertIn("clean", block)
+            for level in PERTURBATION_LEVELS:
+                self.assertIn(level, block["semantic"])
+            self.assertEqual(len(results["cross_domain_perturbation"]), 25)
+            self.assertIn("Sport_to_Health", results["cross_domain_perturbation"])
+
+    def test_perturbation_csvs_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ev = self._build_engine(tmp)
+            test_data = {d: _make_domain_df(d, n=10) for d in DOMAINS}
+            ev.generate_all_perturbations(test_data)
+            for d in DOMAINS:
+                for level in PERTURBATION_LEVELS:
+                    path = os.path.join(tmp, "perturbed", d.lower(), "semantic", f"{level}.csv")
+                    self.assertTrue(os.path.exists(path), path)
 
     def test_domain_shift_metrics_computed(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = self._build_engine(tmp)
             test_data = {d: _make_domain_df(d, n=15) for d in DOMAINS}
             results = ev.run_complete_evaluation(test_data, include_perturbations=False)
-            # cross_domain keys are tuples in-memory: (source, target)
             ood_with_shift = [
                 v for k, v in results["cross_domain"].items()
-                if isinstance(k, tuple) and k[0] != k[1] and "domain_shift" in v
+                if k[0] != k[1] and "domain_shift" in v
             ]
-            self.assertGreater(len(ood_with_shift), 0)
+            self.assertEqual(len(ood_with_shift), 20)
 
-    def test_save_results_creates_json(self):
+    def test_save_results_creates_json_with_arrow_keys(self):
         with tempfile.TemporaryDirectory() as tmp:
             ev = self._build_engine(tmp)
             test_data = {d: _make_domain_df(d, n=10) for d in DOMAINS}
@@ -1103,168 +1033,133 @@ class TestEvaluationEngine(unittest.TestCase):
             with open(path) as f:
                 loaded = json.load(f)
             self.assertIn("in_domain", loaded)
-
-    def test_aggregate_results_returns_dataframe(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ev = self._build_engine(tmp)
-            test_data = {d: _make_domain_df(d, n=10) for d in DOMAINS}
-            results = ev.run_complete_evaluation(test_data, include_perturbations=False)
-            df = ev.aggregate_results(results)
-            self.assertIsInstance(df, pd.DataFrame)
-            self.assertGreater(len(df), 0)
-
-    def test_generate_summary_report_returns_string(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ev = self._build_engine(tmp)
-            test_data = {d: _make_domain_df(d, n=10) for d in DOMAINS}
-            results = ev.run_complete_evaluation(test_data, include_perturbations=False)
-            report = ev.generate_summary_report(results)
-            self.assertIsInstance(report, str)
-            self.assertIn("IN-DOMAIN", report)
-
-    def test_cross_domain_keys_are_arrow_strings(self):
-        """Keys must be 'Source->Target' strings for JSON compatibility."""
-        with tempfile.TemporaryDirectory() as tmp:
-            ev = self._build_engine(tmp)
-            test_data = {d: _make_domain_df(d, n=10) for d in DOMAINS}
-            results = ev.run_complete_evaluation(test_data, include_perturbations=False)
-            # In-memory results use tuple keys; after save+load they become strings
-            path = ev.save_results(results, "keys_test.json")
-            with open(path) as f:
-                saved = json.load(f)
-            for key in saved["cross_domain"]:
+            for key in loaded["cross_domain"]:
                 self.assertIn("->", key, f"Key {key!r} is not in 'A->B' format")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 6.  STATISTICAL ANALYZER
+# 6.  STATISTICAL ANALYZER  (pure-numpy helpers; the PyMC fit is not exercised)
 # ══════════════════════════════════════════════════════════════════════════════
 
-class TestBayesianTester(unittest.TestCase):
+def _make_stat_results(domains=("Technology", "Politics"), f1_offset=0.0) -> dict:
+    """Results dict in the shape assemble_observations() reads."""
+    def block(f1):
+        return {"metrics": {"macro_f1": f1}, "common_ids_count": 50}
 
-    def setUp(self):
-        self.tester = BayesianTester(rope_threshold=0.01, random_seed=42)
-        rng = np.random.default_rng(0)
-        self.scores_a = rng.random(20)
-        self.scores_b = rng.random(20)
-
-    def test_bayesian_signed_rank_returns_dict(self):
-        result = self.tester.bayesian_signed_rank_test(self.scores_a, self.scores_b)
-        self.assertIsInstance(result, dict)
-
-    def test_bayesian_signed_rank_has_probabilities(self):
-        result = self.tester.bayesian_signed_rank_test(self.scores_a, self.scores_b)
-        for key in ("interpretation", "mean_difference", "p_value", "rope_threshold"):
-            self.assertIn(key, result)
-
-    def test_probabilities_sum_to_one(self):
-        result = self.tester.bayesian_signed_rank_test(self.scores_a, self.scores_b)
-        ci = result.get("credible_interval_95", {})
-        self.assertIn("lower", ci)
-        self.assertIn("upper", ci)
-        self.assertLessEqual(ci["lower"], ci["upper"])
-
-    def test_identical_scores_in_rope(self):
-        scores = np.full(20, 0.75)
-        result = self.tester.bayesian_signed_rank_test(scores, scores)
-        self.assertEqual(result["interpretation"], "equivalent")
-
-
-class TestROPEAnalyzer(unittest.TestCase):
-
-    def test_analyze_rope_keys(self):
-        analyzer = ROPEAnalyzer(rope_threshold=0.01)
-        diffs = np.array([0.02, -0.01, 0.005, 0.0, -0.03])
-        result = analyzer.analyze_rope(diffs)
-        self.assertIn("probability_in_rope", result)
-        self.assertIn("decision", result)
-        self.assertIn("credible_intervals", result)
-
-    def test_rope_probability_range(self):
-        analyzer = ROPEAnalyzer(rope_threshold=0.01)
-        diffs = np.random.default_rng(0).random(50) * 0.02 - 0.01
-        result = analyzer.analyze_rope(diffs)
-        prob = result["probability_in_rope"]
-        self.assertGreaterEqual(prob, 0.0)
-        self.assertLessEqual(prob,    1.0)
-
-
-class TestSignificanceTester(unittest.TestCase):
-
-    def setUp(self):
-        rng = np.random.default_rng(1)
-        self.a = rng.random(25)
-        self.b = rng.random(25)
-        self.tester = SignificanceTester(alpha=0.05)
-
-    def test_paired_t_test_keys(self):
-        result = self.tester.paired_t_test(self.a, self.b)
-        for key in ("statistic", "p_value", "is_significant"):
-            self.assertIn(key, result)
-
-    def test_mann_whitney_keys(self):
-        result = self.tester.mann_whitney_u_test(self.a, self.b)
-        for key in ("statistic", "p_value", "is_significant"):
-            self.assertIn(key, result)
-
-    def test_bootstrap_ci_keys(self):
-        result = self.tester.bootstrap_confidence_interval(self.a, n_bootstrap=100)
-        for key in ("confidence_interval", "observed_statistic"):
-            self.assertIn(key, result)
-        self.assertIn("lower", result["confidence_interval"])
-        self.assertIn("upper", result["confidence_interval"])
-
-    def test_ci_lower_leq_upper(self):
-        result = self.tester.bootstrap_confidence_interval(self.a, n_bootstrap=100)
-        ci = result["confidence_interval"]
-        self.assertLessEqual(ci["lower"], ci["upper"])
-
-
-class TestStatisticalAnalyzer(unittest.TestCase):
-
-    def setUp(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            self.tmp = tmp
-        os.makedirs(self.tmp, exist_ok=True)
-        self.analyzer = StatisticalAnalyzer(output_dir=self.tmp)
-        rng = np.random.default_rng(42)
-        self.scores_a = rng.uniform(0.6, 0.9, 20)
-        self.scores_b = rng.uniform(0.55, 0.85, 20)
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_analyze_model_comparison_keys(self):
-        result = self.analyzer.analyze_model_comparison(
-            self.scores_a, self.scores_b, "BASE", "LARGE"
-        )
-        for key in ("model_a_name", "model_b_name", "bayesian_test",
-                    "rope_analysis", "paired_t_test", "overall_interpretation"):
-            self.assertIn(key, result)
-
-    def test_analyze_robustness_keys(self):
-        perturbed = {
-            "low":    self.scores_a - 0.02,
-            "medium": self.scores_a - 0.05,
-            "high":   self.scores_a - 0.12,
+    results = {"perturbation": {}, "cross_domain_perturbation": {}}
+    for d in domains:
+        results["perturbation"][d] = {
+            "clean": block(0.80 + f1_offset),
+            "semantic": {"low": block(0.75), "medium": block(0.70), "high": block(0.65)},
         }
-        result = self.analyzer.analyze_robustness(self.scores_a, perturbed, "BASE")
-        self.assertIn("degradation_analysis", result)
-        for lvl in ("low", "medium", "high"):
-            self.assertIn(lvl, result["degradation_analysis"])
+    for s in domains:
+        for t in domains:
+            sem = {"low": block(0.75), "medium": block(0.70), "high": block(0.65)}
+            results["cross_domain_perturbation"][f"{s}_to_{t}"] = {
+                "clean": block(0.80 + f1_offset), "semantic": sem,
+            }
+    return results
 
-    def test_generate_analysis_report_returns_string(self):
-        comparison = self.analyzer.analyze_model_comparison(
-            self.scores_a, self.scores_b
+
+class TestAssembleObservations(unittest.TestCase):
+
+    def test_row_count_and_columns(self):
+        df = assemble_observations({"base": _make_stat_results()})
+        # 2x2 source/target cells x 4 conditions (clean/low/medium/high)
+        self.assertEqual(len(df), 16)
+        for col in ("model", "source_domain", "target_domain",
+                    "perturbation_condition", "in_domain", "macro_f1", "n_samples"):
+            self.assertIn(col, df.columns)
+
+    def test_diagonal_duplicates_collapsed(self):
+        df = assemble_observations({"base": _make_stat_results()})
+        keys = ["model", "source_domain", "target_domain", "perturbation_condition"]
+        self.assertFalse(df.duplicated(subset=keys).any())
+
+    def test_in_domain_flag_matches_diagonal(self):
+        df = assemble_observations({"base": _make_stat_results()})
+        self.assertTrue(((df["source_domain"] == df["target_domain"]) == df["in_domain"]).all())
+
+    def test_conflicting_duplicates_raise(self):
+        res = _make_stat_results()
+        res["cross_domain_perturbation"]["Technology_to_Technology"]["clean"]["metrics"]["macro_f1"] = 0.10
+        with self.assertRaises(ValueError):
+            assemble_observations({"base": res})
+
+    def test_empty_results_give_empty_frame(self):
+        self.assertTrue(assemble_observations({"base": {}}).empty)
+
+    def test_multiple_models(self):
+        df = assemble_observations({"base": _make_stat_results(), "large": _make_stat_results()})
+        self.assertEqual(set(df["model"]), {"base", "large"})
+        self.assertEqual(len(df), 32)
+
+
+class TestValidateObservations(unittest.TestCase):
+
+    def setUp(self):
+        self.df = assemble_observations({"base": _make_stat_results()})
+
+    def test_clean_frame_has_no_duplicates_or_inconsistency(self):
+        report = validate_observations(self.df)
+        self.assertEqual(report.get("n_duplicates", 0), 0)
+        self.assertEqual(report.get("n_scenario_inconsistent", 0), 0)
+
+    def test_empty_frame_reports_error(self):
+        self.assertIn("error", validate_observations(pd.DataFrame()))
+
+    def test_missing_column_reports_error(self):
+        self.assertIn("error", validate_observations(self.df.drop(columns=["macro_f1"])))
+
+    def test_inconsistent_in_domain_flag_detected(self):
+        bad = self.df.copy()
+        bad.loc[0, "in_domain"] = not bad.loc[0, "in_domain"]
+        self.assertGreaterEqual(validate_observations(bad)["n_scenario_inconsistent"], 1)
+
+    def test_boundary_values_counted(self):
+        df = self.df.copy()
+        df.loc[0, "macro_f1"] = 0.0
+        df.loc[1, "macro_f1"] = 1.0
+        r = validate_observations(df)
+        self.assertGreaterEqual(r["n_boundary_zero"], 1)
+        self.assertGreaterEqual(r["n_boundary_one"], 1)
+
+
+class TestBoundaryCorrection(unittest.TestCase):
+
+    def test_maps_into_open_unit_interval(self):
+        out = apply_boundary_correction(np.array([0.0, 0.5, 1.0]), n=3)
+        np.testing.assert_allclose(out, [0.5 / 3, 1.5 / 3, 2.5 / 3])
+        self.assertTrue(((out > 0) & (out < 1)).all())
+
+    def test_default_n_is_length(self):
+        y = np.array([0.0, 1.0, 0.5, 0.5])
+        np.testing.assert_allclose(
+            apply_boundary_correction(y), apply_boundary_correction(y, n=4)
         )
-        # Actual param name is 'report_type', not 'analysis_type'
-        report = self.analyzer.generate_analysis_report(
-            comparison,
-            report_type="comparison"
-        )
-        self.assertIsInstance(report, str)
-        self.assertGreater(len(report), 0)
+
+    def test_per_row_n(self):
+        out = apply_boundary_correction(np.array([1.0]), n=np.array([80.0]))
+        self.assertAlmostEqual(out[0], (1.0 * 79 + 0.5) / 80)
+
+
+class TestStatisticalAnalyzerWrapper(unittest.TestCase):
+
+    def test_constructor_creates_output_dir_and_stores_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "stats")
+            analyzer = StatisticalAnalyzer(output_dir=out, mcmc_chains=2, random_seed=7)
+            self.assertTrue(os.path.isdir(out))
+            self.assertEqual(analyzer.mcmc_chains, 2)
+            self.assertEqual(analyzer.random_seed, 7)
+
+    def test_run_full_analysis_delegates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            analyzer = StatisticalAnalyzer(output_dir=tmp)
+            with patch("statistical_analyzer.run_full_analysis", return_value={"ok": 1}) as m:
+                self.assertEqual(analyzer.run_full_analysis({"base": {}}), {"ok": 1})
+            self.assertEqual(m.call_args.kwargs["output_dir"], tmp)
+            self.assertEqual(m.call_args.kwargs["mcmc_chains"], 4)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1423,29 +1318,28 @@ class TestEvaluatePipelineIntegration(unittest.TestCase):
             p = self._make_pipeline(tmp)
             self.assertEqual(p.train_output_dir, os.path.join(tmp, "output"))
 
-    def test_perform_statistical_analysis_skipped_single_model(self):
-        from evaluate_pipeline import EvaluationPipeline
+    def test_perform_statistical_analysis_skipped_when_no_results(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = self._make_pipeline(tmp)
-            result = p.perform_statistical_analysis(
-                {"base": _make_fake_results()}
-            )
+            result = p.perform_statistical_analysis({})
             self.assertEqual(result["status"], "skipped")
 
-    def test_perform_statistical_analysis_f1_sequences(self):
-        """Fix #4: scores must be F1 values, not raw probabilities."""
-        from evaluate_pipeline import EvaluationPipeline
+    def test_perform_statistical_analysis_delegates_to_analyzer(self):
+        """The pipeline must hand all model results to StatisticalAnalyzer
+        (PyMC is mocked out; the real fit is not exercised here)."""
         with tempfile.TemporaryDirectory() as tmp:
             p = self._make_pipeline(tmp)
-            results_a = _make_fake_results()
-            results_b = _make_fake_results()
-            stat = p.perform_statistical_analysis({"base": results_a, "large": results_b})
-            self.assertEqual(stat["status"], "completed")
-            self.assertEqual(stat["score_type"], "f1_per_condition")
-            # All F1 values must be in [0, 1]
-            n = stat["n_conditions_per_model"]["base"]
-            self.assertGreater(n, 0)
-            self.assertLessEqual(n, 20)
+            all_results = {"base": _make_fake_results()}
+            with patch("evaluate_pipeline.StatisticalAnalyzer") as analyzer_cls:
+                analyzer_cls.return_value.run_full_analysis.return_value = {"status": "completed"}
+                result = p.perform_statistical_analysis(all_results)
+            self.assertEqual(result, {"status": "completed"})
+            analyzer_cls.return_value.run_full_analysis.assert_called_once_with(all_results)
+            self.assertEqual(analyzer_cls.call_args.kwargs["random_seed"], 42)
+            self.assertEqual(
+                analyzer_cls.call_args.kwargs["output_dir"],
+                os.path.join(tmp, "results", "statistical_analysis"),
+            )
 
     def test_generate_summary_contains_model(self):
         from evaluate_pipeline import EvaluationPipeline
@@ -1521,13 +1415,15 @@ class TestPrintEvaluationSummary(unittest.TestCase):
     def _run_summary(self, **kwargs):
         from print_evaluation_summary import print_full_evaluation_summary
         captured = StringIO()
-        with patch("sys.stdout", captured):
-            with patch("matplotlib.pyplot.show"):
-                with patch("matplotlib.pyplot.savefig"):
+        # Plots go to a temp dir so the test never writes PNGs into the working tree.
+        with tempfile.TemporaryDirectory() as plot_dir:
+            with patch("sys.stdout", captured):
+                with patch("matplotlib.pyplot.show"):
                     print_full_evaluation_summary(
                         self.results,
                         model_name="BASE",
                         run_error_analysis=False,
+                        output_dir=plot_dir,
                         **kwargs
                     )
         return captured.getvalue()
@@ -1559,27 +1455,16 @@ class TestPrintEvaluationSummary(unittest.TestCase):
         """If perturbation was skipped, _plot_mean_perturbation must not crash."""
         results_no_pert = _make_fake_results(include_perturbation=False)
         from print_evaluation_summary import print_full_evaluation_summary
-        with patch("sys.stdout", StringIO()):
-            with patch("matplotlib.pyplot.show"):
-                with patch("matplotlib.pyplot.savefig"):
+        with tempfile.TemporaryDirectory() as plot_dir:
+            with patch("sys.stdout", StringIO()):
+                with patch("matplotlib.pyplot.show"):
                     # Should not raise KeyError
                     print_full_evaluation_summary(
                         results_no_pert,
                         model_name="BASE",
                         run_error_analysis=False,
+                        output_dir=plot_dir,
                     )
-
-    def test_load_results_arrow_keys_preserved(self):
-        """load_results must NOT try to parse tuple strings — keys stay 'A->B'."""
-        from print_evaluation_summary import load_results
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, "complete_evaluation.json")
-            with open(path, "w") as f:
-                json.dump(self.results, f)
-            loaded = load_results(tmp)
-            for key in loaded["cross_domain"]:
-                self.assertIsInstance(key, str)
-                self.assertIn("->", key)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -342,7 +342,7 @@ src/
 - Complete Python implementation in `src/`
 - Configuration files (`config.py`, `requirements.txt`)
 - Test suite (`test_suite.py`)
-- End-to-end notebook (`run_complete_pipeline.ipynb`)
+- Execution notebooks (`run_base.ipynb`, `run_large.ipynb`, `run_lite.ipynb`, `run_bayesian_statistics.ipynb`)
 
 **13.2 Trained Models**
 - Fine-tuned IndoBERT base specialists (5 domains × 1 variant = 5 checkpoints)

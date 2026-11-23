@@ -316,14 +316,21 @@ class SystemConfig:
     # Device settings
     USE_CUDA: bool = True
     CUDA_DEVICE: int = 0
-    NUM_WORKERS: int = 0  # For DataLoader
+    NUM_WORKERS: int = 4  # DataLoader workers; forced to 0 on CPU (see ModelTrainer)
     
-    # Performance
-    MIXED_PRECISION: bool = False
+    # Performance (A100)
+    # AMP_MODE: "auto" -> bf16 on Ampere+ (no GradScaler needed), else fp16 + GradScaler;
+    #           "bf16" / "fp16" force a dtype; "off" = pure fp32. Ignored on CPU.
+    MIXED_PRECISION: bool = False  # legacy flag, not read; use AMP_MODE
+    AMP_MODE: str = "auto"
+    ALLOW_TF32: bool = True        # TF32 tensor cores for any remaining fp32 matmuls
     GRADIENT_ACCUMULATION_STEPS: int = 1
+    INFERENCE_BATCH_SIZE: int = 256  # predict() batch size on CUDA (no effect on training)
     
     # Memory management
-    EMPTY_CACHE_FREQUENCY: int = 100  # Empty CUDA cache every N batches
+    # Per-batch empty_cache() slows training (forces re-allocation), so it is OFF
+    # by default. ModelTrainer.release_memory() frees memory between models/domains.
+    EMPTY_CACHE_FREQUENCY: int = 0  # Empty CUDA cache every N train batches (0 = never)
     MAX_MEMORY_ALLOCATED: float = 0.9  # Maximum GPU memory usage (90%)
 
 

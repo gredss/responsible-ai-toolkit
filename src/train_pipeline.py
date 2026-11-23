@@ -255,6 +255,8 @@ class TrainingPipeline:
                 logger.info(f"Copying {filename} → Drive ({domain})")
                 _copy_to_drive(src, dst)
 
+        trainer.release_memory()   # free VRAM before the next domain's specialist
+
         best_macro_f1 = max(history['val_macro_f1'])
         best_epoch = history['val_macro_f1'].index(best_macro_f1)
 
@@ -349,7 +351,9 @@ class TrainingPipeline:
             if os.path.isfile(src):
                 logger.info(f"Copying {filename} → Drive ({domain})")
                 _copy_to_drive(src, dst)
-		
+
+        trainer.release_memory()
+
         best_macro_f1 = max(history['val_macro_f1'])
         best_epoch = history['val_macro_f1'].index(best_macro_f1)
 
@@ -517,6 +521,11 @@ def parse_arguments():
         help='Device to use for training (default: auto)'
     )
     parser.add_argument(
+        '--amp-mode', type=str, default=None,
+        choices=['auto', 'bf16', 'fp16', 'off'],
+        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100)'
+    )
+    parser.add_argument(
         '--grid-search', action='store_true',
         help='Perform hyperparameter grid search'
     )
@@ -542,6 +551,9 @@ def main():
         if args.debug:
             debug_logger.set_debug(True)
             logger.info("[debug_logger] Debug output ENABLED for this run")
+
+        if args.amp_mode:
+            config.system.AMP_MODE = args.amp_mode
         
         pipeline = TrainingPipeline(
             dataset_dir=args.dataset_dir,

@@ -45,7 +45,10 @@ responsible-ai-toolkit/
 │   ├── utils.py                     # Shared helper functions
 │   └── test_suite.py                # End-to-end unit/integration tests (no GPU required)
 ├── requirements.txt
-├── run_complete_pipeline.ipynb      # End-to-end execution notebook
+├── run_base.ipynb                   # Train + evaluate the base model (Colab A100)
+├── run_large.ipynb                  # Train + evaluate the large model
+├── run_lite.ipynb                   # Train + evaluate the lite model
+├── run_bayesian_statistics.ipynb    # Joint Bayesian analysis over all three models (CPU)
 └── README.md
 ```
 
@@ -182,11 +185,10 @@ python src/evaluate_pipeline.py --model base --skip-perturbation
 streamlit run src/dashboard_app.py
 ```
 
-### Full end-to-end notebook
+### Full end-to-end notebooks (Colab)
 
-```bash
-jupyter notebook run_complete_pipeline.ipynb
-```
+Run `run_base.ipynb`, `run_large.ipynb` and `run_lite.ipynb` with the same `RUN_NAME`, then
+`run_bayesian_statistics.ipynb`. The Bayesian analysis compares the three models, so it needs all of them.
 
 ### Run tests (no GPU needed)
 

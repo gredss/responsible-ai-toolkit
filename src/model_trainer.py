@@ -7,9 +7,11 @@ batched prediction, and hyperparameter grid search for IndoBERT variants
 """
 
 import os
+import gc
 import json
 import shutil
 import time
+import contextlib
 from itertools import product
 
 import torch
@@ -24,6 +26,7 @@ from tqdm import tqdm
 import logging
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
+from config import config
 from debug_logger import (
     dbg_dataset_created,
     dbg_tokenizer_samples,
@@ -141,6 +144,8 @@ class ModelTrainer:
         device: Optional[str] = None,
         random_seed: int = 42,
         dropout_rate: float = 0.1,
+        amp_mode: Optional[str] = None,
+        num_workers: Optional[int] = None,
     ):
         self.model_name   = model_name
         self.num_labels   = num_labels
@@ -153,6 +158,24 @@ class ModelTrainer:
             self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         else:
             self.device = torch.device(device)
+
+        # Fail fast with a clear message instead of a cryptic error at model.to().
+        self._on_cuda = str(self.device).startswith("cuda")
+        if self._on_cuda and not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA device requested but torch.cuda.is_available() is False. "
+                "Check the GPU runtime/driver, or pass --device cpu."
+            )
+
+        # Performance settings (defaults come from config.system; see config.py).
+        sys_cfg          = config.system
+        self.amp_dtype   = self._resolve_amp_dtype(amp_mode or sys_cfg.AMP_MODE)
+        self.scaler      = self._make_grad_scaler() if (
+            self.amp_dtype is not None and self.amp_dtype == torch.float16) else None
+        # Worker processes only help when feeding a GPU; keep CPU runs single-process.
+        self.num_workers = (sys_cfg.NUM_WORKERS if num_workers is None else num_workers) \
+            if self._on_cuda else 0
+        self._configure_cuda_backends(sys_cfg.ALLOW_TF32)
 
         self._set_seed(random_seed)
         self.tokenizer        = BertTokenizer.from_pretrained(model_name, do_lower_case=True)
@@ -170,6 +193,54 @@ class ModelTrainer:
         torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
 
+    # ------------------------------------------------------------------
+    # A100 / mixed-precision helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_amp_dtype(self, mode: str):
+        """Map AMP_MODE -> autocast dtype (None = full fp32). bf16 needs no GradScaler."""
+        mode = str(mode).lower()
+        if mode not in ("auto", "bf16", "fp16", "off"):
+            raise ValueError(f"amp_mode must be one of auto|bf16|fp16|off, got '{mode}'")
+        if not self._on_cuda or mode == "off":
+            return None
+        if mode == "bf16":
+            return torch.bfloat16
+        if mode == "fp16":
+            return torch.float16
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    @staticmethod
+    def _make_grad_scaler():
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            return torch.amp.GradScaler("cuda")
+        return torch.cuda.amp.GradScaler()
+
+    def _configure_cuda_backends(self, allow_tf32: bool) -> None:
+        """Enable TF32 tensor cores for any fp32 matmul that remains outside autocast."""
+        if not self._on_cuda:
+            return
+        torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+        torch.backends.cudnn.allow_tf32 = allow_tf32
+        torch.set_float32_matmul_precision("high" if allow_tf32 else "highest")
+
+    def _autocast(self):
+        if self.amp_dtype is None:
+            return contextlib.nullcontext()
+        return torch.autocast(device_type="cuda", dtype=self.amp_dtype)
+
+    def release_memory(self) -> None:
+        """Drop model/optimizer references and return cached CUDA blocks to the driver.
+
+        Call between domains / grid-search configs so VRAM does not accumulate.
+        """
+        self.model = None
+        self.optimizer = None
+        self.scheduler = None
+        gc.collect()
+        if self._on_cuda:
+            torch.cuda.empty_cache()
+
     def initialize_model(self, dropout_rate: float = 0.1) -> None:
         self.dropout_rate = dropout_rate
         self.model = IndoBERTClassifier(self.model_name, self.num_labels, dropout_rate)
@@ -181,8 +252,13 @@ class ModelTrainer:
                                     self.tokenizer, self.max_length, split_name="train")
         val_ds   = ClickbaitDataset(val_df['text'].tolist(),   val_df['label'].tolist(),
                                     self.tokenizer, self.max_length, split_name="val")
-        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=0)
-        val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=0)
+        loader_kw = dict(
+            num_workers=self.num_workers,
+            pin_memory=self._on_cuda,
+            persistent_workers=self.num_workers > 0,
+        )
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  **loader_kw)
+        val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, **loader_kw)
         logger.info(f"DataLoaders: train={len(train_loader)} batches  val={len(val_loader)} batches")
         return train_loader, val_loader
 
@@ -203,60 +279,81 @@ class ModelTrainer:
     def train_epoch(self, train_loader, epoch: int) -> Dict[str, float]:
         self.model.train()
         loss_fn  = nn.CrossEntropyLoss()
-        total_loss, correct, total = 0, 0, 0
+        # Accumulate on-device: .item() every step forces a GPU->CPU sync that
+        # stalls the pipeline. Read the totals once at the end of the epoch.
+        total_loss = torch.zeros((), device=self.device)
+        correct    = torch.zeros((), dtype=torch.long, device=self.device)
+        total      = 0
+        cache_every = config.system.EMPTY_CACHE_FREQUENCY
 
         for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch}")):
-            input_ids      = batch['input_ids'].to(self.device)
-            attention_mask = batch['attention_mask'].to(self.device)
-            labels         = batch['labels'].to(self.device)
+            input_ids      = batch['input_ids'].to(self.device, non_blocking=True)
+            attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+            labels         = batch['labels'].to(self.device, non_blocking=True)
 
-            logits = self.model(input_ids, attention_mask)
+            self.optimizer.zero_grad(set_to_none=True)
+            with self._autocast():
+                logits = self.model(input_ids, attention_mask)
+            logits = logits.float()               # loss / argmax always in fp32
             loss   = loss_fn(logits, labels)
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            self.optimizer.step()
+            if self.scaler is not None:           # fp16 only; bf16 needs no scaling
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                self.optimizer.step()
             self.scheduler.step()
 
-            preds   = torch.argmax(logits, dim=1)
-            correct += (preds == labels).sum().item()
-            total   += labels.size(0)
-            total_loss += loss.item()
+            correct    += (torch.argmax(logits, dim=1) == labels).sum()
+            total      += labels.size(0)
+            total_loss += loss.detach()
 
-            dbg_trainer_batch(batch_idx=batch_idx, input_ids_shape=tuple(input_ids.shape),
-                              labels=labels.cpu(), logits=logits.detach().cpu(), loss=loss.item())
+            # dbg_trainer_batch only logs every 50th batch (and only in debug mode);
+            # gate the call so the .cpu()/.item() syncs are not paid on every step.
+            if batch_idx % 50 == 0:
+                dbg_trainer_batch(batch_idx=batch_idx, input_ids_shape=tuple(input_ids.shape),
+                                  labels=labels.cpu(), logits=logits.detach().cpu(), loss=loss.item())
 
-        metrics = {'loss': total_loss / len(train_loader), 'accuracy': correct / total}
+            if cache_every and self._on_cuda and (batch_idx + 1) % cache_every == 0:
+                torch.cuda.empty_cache()
+
+        metrics = {'loss': total_loss.item() / len(train_loader), 'accuracy': correct.item() / total}
         dbg_trainer_epoch_end(epoch=epoch, phase="train", metrics=metrics)
         return metrics
 
     def evaluate(self, val_loader) -> Dict[str, float]:
         self.model.eval()
         loss_fn = nn.CrossEntropyLoss()
-        total_loss = 0
-        all_preds, all_labels = [], []
+        total_loss = torch.zeros((), device=self.device)
+        pred_chunks, label_chunks = [], []
 
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Evaluating"):
-                input_ids      = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                labels         = batch['labels'].to(self.device)
+                input_ids      = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                labels         = batch['labels'].to(self.device, non_blocking=True)
 
-                logits = self.model(input_ids, attention_mask)
-                total_loss += loss_fn(logits, labels).item()
-                all_preds.extend(torch.argmax(logits, dim=1).cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                with self._autocast():
+                    logits = self.model(input_ids, attention_mask)
+                logits = logits.float()
+                total_loss += loss_fn(logits, labels)
+                pred_chunks.append(torch.argmax(logits, dim=1))
+                label_chunks.append(labels)
 
-        all_preds  = np.array(all_preds)
-        all_labels = np.array(all_labels)
+        all_preds  = torch.cat(pred_chunks).cpu().numpy()
+        all_labels = torch.cat(label_chunks).cpu().numpy()
         accuracy   = accuracy_score(all_labels, all_preds)
         precision, recall, f1, _ = precision_recall_fscore_support(
             all_labels, all_preds, labels=[0, 1], average=None, zero_division=0
         )
 
         metrics = {
-            'loss':        total_loss / len(val_loader),
+            'loss':        total_loss.item() / len(val_loader),
             'accuracy':    accuracy,
             'precision_0': precision[0], 'recall_0': recall[0], 'f1_0': f1[0],
             'precision_1': precision[1], 'recall_1': recall[1], 'f1_1': f1[1],
@@ -355,9 +452,13 @@ class ModelTrainer:
 
         Always write to a LOCAL path (e.g. /content/...). Copying to Drive is
         the responsibility of the caller (train_pipeline.py) via _copy_to_drive.
+
+        The file is written to a temp name and atomically renamed, so a crash or
+        preemption mid-write can never leave a truncated best_model.pt behind.
         """
         os.makedirs(checkpoint_dir, exist_ok=True)
         checkpoint_path = os.path.join(checkpoint_dir, f"{checkpoint_name}.pt")
+        tmp_path = checkpoint_path + ".tmp"
         torch.save({
             'model_state_dict':     self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict() if self.optimizer else None,
@@ -369,7 +470,8 @@ class ModelTrainer:
                 'max_length':  self.max_length,
                 'random_seed': self.random_seed,
             },
-        }, checkpoint_path)
+        }, tmp_path)
+        os.replace(tmp_path, checkpoint_path)
         logger.info(f"Checkpoint saved → {checkpoint_path}")
 
         history_path = os.path.join(checkpoint_dir, f"{checkpoint_name}_history.json")
@@ -384,7 +486,9 @@ class ModelTrainer:
     def load_checkpoint(self, checkpoint_path: str) -> None:
         if not os.path.exists(checkpoint_path):
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        # Load to CPU first: the file also holds AdamW state (~3x the weights), and
+        # materialising that on the GPU would spike VRAM for every specialist loaded.
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         if self.model is None:
             self.initialize_model()
         self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -395,25 +499,34 @@ class ModelTrainer:
         self.training_history = checkpoint.get('training_history', [])
         logger.info(f"Checkpoint loaded ← {checkpoint_path}")
 
-    def predict(self, texts: List[str], batch_size: int = 32) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (predictions, probabilities) for a list of text strings."""
+    def predict(self, texts: List[str], batch_size: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Return (predictions, probabilities) for a list of text strings.
+
+        batch_size=None -> config.system.INFERENCE_BATCH_SIZE on CUDA (no gradients,
+        so far larger batches fit), 32 on CPU.
+        """
         if self.model is None:
             raise RuntimeError("Model not initialised or loaded.")
         self.model.eval()
+        if batch_size is None:
+            batch_size = config.system.INFERENCE_BATCH_SIZE if self._on_cuda else 32
 
         dbg_trainer_predict_start(n_texts=len(texts), batch_size=batch_size)
 
         # Create a dataset with dummy labels (0); labels are ignored during inference.
         dataset = ClickbaitDataset(texts, [0] * len(texts), self.tokenizer,
                                    self.max_length, split_name="predict")
-        loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+        loader  = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                             num_workers=self.num_workers, pin_memory=self._on_cuda)
 
         all_preds, all_probs = [], []
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(loader, desc="Predicting")):
-                input_ids      = batch['input_ids'].to(self.device)
-                attention_mask = batch['attention_mask'].to(self.device)
-                logits         = self.model(input_ids, attention_mask)
+                input_ids      = batch['input_ids'].to(self.device, non_blocking=True)
+                attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
+                with self._autocast():
+                    logits = self.model(input_ids, attention_mask)
+                logits         = logits.float()
                 probs          = torch.softmax(logits, dim=1)
                 preds          = torch.argmax(logits, dim=1)
 
@@ -479,6 +592,7 @@ def run_hyperparameter_search(
         history = trainer.train(train_df=train_df, val_df=val_df,
                                 num_epochs=num_epochs, **params)
         run_best_f1 = max(history['val_macro_f1'])
+        trainer.release_memory()   # 12 configs x 110M params would otherwise pile up in VRAM
 
         all_results.append({'params': params, 'best_macro_f1': run_best_f1, 'history': history})
 

@@ -552,7 +552,8 @@ class EvaluationPipeline:
     def run(
         self,
         models: List[str] = ['base'],
-        skip_perturbation: bool = False
+        skip_perturbation: bool = False,
+        skip_statistics: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the complete evaluation pipeline.
@@ -560,6 +561,8 @@ class EvaluationPipeline:
         Args:
             models: List of model names to evaluate
             skip_perturbation: Whether to skip perturbation testing
+            skip_statistics: Skip the CPU-bound Bayesian MCMC step (run it later
+                on a CPU machine from the saved complete_evaluation.json files)
 
         Returns:
             Dictionary with all evaluation results
@@ -595,7 +598,16 @@ class EvaluationPipeline:
                 logger.error(f"Failed to evaluate {model_name}: {str(e)}")
                 traceback.print_exc()
 
-        statistical_analysis = self.perform_statistical_analysis(all_results)
+        if not all_results:
+            # Every model failed: do NOT report success (exit code must be non-zero).
+            logger.error("All requested models failed to evaluate; see errors above.")
+            return {'status': 'failed', 'reason': 'all_models_failed'}
+
+        if skip_statistics:
+            logger.info("Skipping statistical analysis (--skip-statistics).")
+            statistical_analysis = {'status': 'skipped', 'reason': 'skip_statistics_flag'}
+        else:
+            statistical_analysis = self.perform_statistical_analysis(all_results)
         summary = self.generate_summary(all_results, statistical_analysis)
 
         total_time = total_timer.stop()
@@ -646,6 +658,15 @@ def parse_arguments():
         help='Skip perturbation robustness testing (faster evaluation)'
     )
     parser.add_argument(
+        '--skip-statistics', action='store_true',
+        help='Skip the Bayesian MCMC analysis (CPU-bound; do not pay GPU rates for it)'
+    )
+    parser.add_argument(
+        '--amp-mode', type=str, default=None,
+        choices=['auto', 'bf16', 'fp16', 'off'],
+        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100)'
+    )
+    parser.add_argument(
         '--perturbation-output-dir', type=str,
         default='/content/drive/MyDrive/thesis/results',
         help='Root directory for perturbed CSVs (written to <root>/<model>). '
@@ -680,6 +701,9 @@ def main():
             debug_logger.set_debug(True)
             logger.info("[debug_logger] Debug output ENABLED for this run")
 
+        if args.amp_mode:
+            config.system.AMP_MODE = args.amp_mode
+
         pipeline = EvaluationPipeline(
             checkpoint_dir=args.checkpoint_dir,
             dataset_dir=args.dataset_dir,
@@ -695,7 +719,8 @@ def main():
 
         results = pipeline.run(
             models=models,
-            skip_perturbation=args.skip_perturbation
+            skip_perturbation=args.skip_perturbation,
+            skip_statistics=args.skip_statistics,
         )
 
         if results['status'] == 'success':
