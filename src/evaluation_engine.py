@@ -16,7 +16,9 @@ Public functions (module-level, no class needed):
 
 Orchestrator (class with real state):
     EvaluationEngine  — owns the dict of specialist trainers, the perturbation
-                        engine, output paths, and runs the full 4-phase pipeline.
+                        engine, output paths, and runs the 5-phase pipeline
+                        (phase 3 only generates perturbed data; phases 1, 2, 4
+                        and 5 produce metrics).
 """
 
 import ast
@@ -475,7 +477,8 @@ def evaluate_existing_perturbation(
 
 class EvaluationEngine:
     """
-    Orchestrates the full 4-phase evaluation pipeline.
+    Orchestrates the 5-phase evaluation pipeline (phase 3 only generates
+    perturbed data; phases 1, 2, 4 and 5 produce metrics).
 
     State owned by this class:
         model_trainers          — {domain: ModelTrainer} for every loaded specialist
@@ -611,7 +614,10 @@ class EvaluationEngine:
         include_perturbations: bool = True,
     ):
         """
-        Run all four evaluation phases and return a nested results dict.
+        Run all five phases and return a nested results dict.
+
+        Phase 3 only generates perturbed data (no metrics); phases 1, 2, 4
+        and 5 produce the metrics stored in the result structure below.
 
         Result structure:
             results['in_domain'][domain]                           — phase 1

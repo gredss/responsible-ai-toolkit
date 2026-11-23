@@ -6,7 +6,7 @@ save/load -> PerturbationEngine -> EvaluationEngine -- on a tiny stratified
 sample of the real dataset, in a throw-away temp directory.  It needs the real
 torch/transformers install and the cached IndoBERT weights, but no GPU.
 
-Usage (from ths_test/):
+Usage (from the repository root):
     python src/smoke_test.py                  # auto device, 24 rows/domain
     python src/smoke_test.py --device cpu --rows 24 --keep
     python src/smoke_test.py --device cuda    # also validates AMP / pin_memory path

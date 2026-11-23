@@ -53,7 +53,9 @@ class TrainingConfig:
     
     # Early stopping
     EARLY_STOPPING_PATIENCE: int = 2
-    EARLY_STOPPING_METRIC: str = "f1"
+    # Documentation only: NOT read by the code. ModelTrainer.train() always
+    # early-stops and checkpoints on val_metrics['macro_f1'].
+    EARLY_STOPPING_METRIC: str = "macro_f1"
     
     # Learning rate scheduler
     SCHEDULER_TYPE: str = "linear"
@@ -318,8 +320,8 @@ class SystemConfig:
     CUDA_DEVICE: int = 0
     NUM_WORKERS: int = 4  # DataLoader workers; forced to 0 on CPU (see ModelTrainer)
     
-    # Performance (A100)
-    # AMP_MODE: "auto" -> bf16 on Ampere+ (no GradScaler needed), else fp16 + GradScaler;
+    # Performance (A100 and T4)
+    # AMP_MODE: "auto" -> bf16 on Ampere+ (A100; no GradScaler needed), else fp16 + GradScaler (T4);
     #           "bf16" / "fp16" force a dtype; "off" = pure fp32. Ignored on CPU.
     MIXED_PRECISION: bool = False  # legacy flag, not read; use AMP_MODE
     AMP_MODE: str = "auto"

@@ -2,12 +2,16 @@
 """
 Evaluation Pipeline for IndoBERT Clickbait Detection System
 
-This script orchestrates comprehensive evaluation:
+This script orchestrates comprehensive evaluation.  EvaluationEngine runs a
+5-phase pipeline per model (phase 3 only generates perturbed data; phases
+1, 2, 4 and 5 produce metrics):
 1. In-domain evaluation (train and test on same domain)
-2. Cross-domain evaluation (5×5 matrix)
-3. Perturbation robustness testing (3 intensity levels)
-4. Statistical significance analysis
-5. Results aggregation and visualization
+2. Cross-domain evaluation (5×5 matrix) + domain-shift metrics
+3. Perturbation generation (3 intensity levels; data only, no metrics)
+4. In-domain perturbation evaluation
+5. Cross-domain × perturbation evaluation
+Afterwards this script runs the Bayesian statistical analysis across models
+and writes the aggregated evaluation summary JSON.
 
 Usage:
     # Evaluate single model
@@ -664,7 +668,7 @@ def parse_arguments():
     parser.add_argument(
         '--amp-mode', type=str, default=None,
         choices=['auto', 'bf16', 'fp16', 'off'],
-        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100)'
+        help='Mixed precision on CUDA (default: config.system.AMP_MODE = auto -> bf16 on A100, fp16 on T4)'
     )
     parser.add_argument(
         '--perturbation-output-dir', type=str,
