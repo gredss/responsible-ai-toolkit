@@ -1,0 +1,7 @@
+# Normalise line endings for source and docs only (prevents CRLF/LF churn).
+# Data files (dataset/data/*.csv) are deliberately NOT listed: their bytes must stay
+# unchanged for reproducibility of the experiments.
+*.py    text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.ipynb text eol=lf
