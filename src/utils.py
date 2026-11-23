@@ -7,15 +7,13 @@ and reproducibility helpers used across the entire system.
 
 import os
 import json
-import pickle
 import random
 import logging
 import numpy as np
 import pandas as pd
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any, Dict, List
 from pathlib import Path
 from datetime import datetime
-import hashlib
 
 
 class FileManager:
@@ -144,62 +142,8 @@ class FileManager:
             True if file exists, False otherwise
         """
         return os.path.exists(filepath)
-    
-class LoggerManager:
-    """Manages logging configuration and logger instances."""
-    
-    _loggers: Dict[str, logging.Logger] = {}
-    
-    @staticmethod
-    def setup_logger(
-        name: str,
-        log_file: Optional[str] = None,
-        level: int = logging.INFO,
-        format_string: Optional[str] = None
-    ) -> logging.Logger:
-        """
-        Setup and configure a logger.
-        
-        Args:
-            name: Logger name
-            log_file: Optional log file path
-            level: Logging level
-            format_string: Optional custom format string
-            
-        Returns:
-            Configured logger instance
-        """
-        if name in LoggerManager._loggers:
-            return LoggerManager._loggers[name]
-        
-        logger = logging.getLogger(name)
-        logger.setLevel(level)
-        logger.handlers.clear()
-        
-        # Default format
-        if format_string is None:
-            format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        
-        formatter = logging.Formatter(format_string)
-        
-        # Console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-        
-        # File handler
-        if log_file:
-            FileManager.ensure_directory(os.path.dirname(log_file))
-            file_handler = logging.FileHandler(log_file, encoding='utf-8')
-            file_handler.setLevel(level)
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-        
-        LoggerManager._loggers[name] = logger
-        
-        return logger
-    
+
+
 class ReproducibilityHelper:
     """Ensures reproducibility across the system."""
     
@@ -271,88 +215,6 @@ class Timer:
         self.stop()
 
 
-class DataValidator:
-    """Validates data integrity and quality."""
-    
-class HashHelper:
-    """Provides hashing utilities for data integrity."""
-    
-class MetricsFormatter:
-    """Formats metrics for display and export."""
-    
-class ProgressTracker:
-    """Tracks progress of long-running operations."""
-    
-    def __init__(self, total: int, description: str = "Processing"):
-        """
-        Initialize progress tracker.
-        
-        Args:
-            total: Total number of items
-            description: Description of operation
-        """
-        self.total = total
-        self.current = 0
-        self.description = description
-        self.start_time = datetime.now()
-    
-    def update(self, n: int = 1) -> None:
-        """
-        Update progress.
-        
-        Args:
-            n: Number of items completed
-        """
-        self.current += n
-    
-    def get_progress(self) -> float:
-        """
-        Get current progress as percentage.
-        
-        Returns:
-            Progress percentage (0-100)
-        """
-        if self.total == 0:
-            return 100.0
-        
-        return (self.current / self.total) * 100
-    
-    def __str__(self) -> str:
-        """String representation of progress."""
-        progress = self.get_progress()
-        return f"{self.description}: {self.current}/{self.total} ({progress:.1f}%)"
-
-
-class ConfigValidator:
-    """Validates configuration settings."""
-    
-    @staticmethod
-    def validate_range(
-        value: float,
-        min_val: float,
-        max_val: float,
-        name: str
-    ) -> bool:
-        """
-        Validate value is within range.
-        
-        Args:
-            value: Value to validate
-            min_val: Minimum allowed value
-            max_val: Maximum allowed value
-            name: Parameter name for error messages
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        if not (min_val <= value <= max_val):
-            logging.warning(
-                f"{name} value {value} is outside valid range [{min_val}, {max_val}]"
-            )
-            return False
-        
-        return True
-    
 def get_timestamp(format_string: str = "%Y%m%d_%H%M%S") -> str:
     """
     Get current timestamp as formatted string.
@@ -433,45 +295,6 @@ def batch_iterator(
         batches.append(items[i:i + batch_size])
     
     return batches
-
-
-def retry_on_failure(
-    func: Callable,
-    max_retries: int = 3,
-    delay: float = 1.0
-) -> Callable:
-    """
-    Decorator to retry function on failure.
-    
-    Args:
-        func: Function to wrap
-        max_retries: Maximum number of retry attempts
-        delay: Delay between retries in seconds
-        
-    Returns:
-        Wrapped function
-    """
-    import time
-    from functools import wraps
-    
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        for attempt in range(max_retries):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    raise
-                
-                logging.warning(
-                    f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}. "
-                    f"Retrying in {delay}s..."
-                )
-                time.sleep(delay)
-        
-        return None
-    
-    return wrapper
 
 
 # Convenience instances used by train_pipeline.py and evaluate_pipeline.py

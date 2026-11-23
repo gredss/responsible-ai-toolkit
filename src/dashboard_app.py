@@ -30,6 +30,21 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _split_pair(key):
+    """
+    Return (source, target) for one cross-domain key.
+
+    Cross-domain results are keyed by (source, target) tuples in memory, but
+    the evaluation JSON stores them as "Source->Target" strings. After loading
+    the JSON we get strings, so we split on "->"; if we are handed the original
+    tuple we just return it unchanged.
+    """
+    if isinstance(key, tuple):
+        return key[0], key[1]
+    source, target = key.split("->")
+    return source, target
+
+
 class DashboardConfig:
     """
     Dashboard-level constants derived from the central :class:`config.Config`
@@ -390,16 +405,21 @@ class DomainShiftMatrix:
         if not cross_domain_results:
             return None
         
+        # Keys are "Source->Target" strings after the JSON round-trip (and
+        # (source, target) tuples if read straight from memory). Split both.
+        pairs = [_split_pair(k) for k in cross_domain_results.keys()]
+        
         # Extract domains
         domains = sorted(set(
-            [k[0] for k in cross_domain_results.keys()] +
-            [k[1] for k in cross_domain_results.keys()]
+            [source for source, _ in pairs] +
+            [target for _, target in pairs]
         ))
         
         # Create matrix
         matrix = pd.DataFrame(index=domains, columns=domains, dtype=float)
         
-        for (source, target), results in cross_domain_results.items():
+        for key, results in cross_domain_results.items():
+            source, target = _split_pair(key)
             if metric in results.get('metrics', {}):
                 matrix.loc[source, target] = results['metrics'][metric]
         
@@ -764,7 +784,8 @@ class ReliabilitySummary:
             cross_domain_results = self.evaluation_results['cross_domain']
             
             cross_f1_scores = []
-            for (source, target), results in cross_domain_results.items():
+            for key, results in cross_domain_results.items():
+                source, target = _split_pair(key)
                 if source != target:
                     cross_f1_scores.append(results['metrics']['f1'])
             

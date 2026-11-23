@@ -55,19 +55,17 @@ METRIC_LABELS = {
 }
 # The two perturbation mechanisms and their three intensity levels.
 # 'clean' is the shared, unperturbed baseline (shown alongside both mechanisms).
-PERTURB_TYPES = ["semantic", "typo"]
+PERTURB_TYPES = ["semantic"]
 PERTURB_LEVELS = ["low", "medium", "high"]
 # The full ordered sequence used when a chart/table shows clean -> increasing noise.
 PERTURB_SEQUENCE = ["clean", "low", "medium", "high"]
 
 # Human-readable labels for the perturbation types (used in titles/headers).
 PERTURB_TYPE_LABELS = {
-    "semantic": "Semantic (synonym substitution)",
-    "typo": "Typo (character noise)",
+    "semantic": "Semantic (synonym substitution)", 
 }
 SEP_THICK = "═" * 80
 SEP_THIN  = "─" * 80
-SEP_MID   = "·" * 80
 
 
 def _v(val) -> float:
@@ -77,10 +75,6 @@ def _v(val) -> float:
     if hasattr(val, "item"):          # np scalar
         return float(val.item())
     return float(val)
-
-
-def _pct(val: float) -> str:
-    return f"{val * 100:+.1f}%"
 
 
 def _bar(val: float, width: int = 20, fill: str = "█", empty: str = "░") -> str:
@@ -112,11 +106,12 @@ def _safe_get(d: dict, *keys, default=0.0):
 def _clean_metric(perturbation: dict, in_domain: dict, domain: str,
                   metric: str = "macro_f1") -> float:
     """
-    Return the shared CLEAN-baseline metric for one domain.
+    Return the SUBSET clean baseline metric for one domain.
 
-    The clean condition is stored once at perturbation[domain]['clean'], but for
-    robustness it also falls back to the in-domain result (they are the same
-    unperturbed evaluation).
+    perturbation[domain]['clean'] is now scored on the common subset
+    (only samples successfully perturbed at all three levels), so every
+    comparison — Clean vs Low vs Medium vs High — uses the exact same samples.
+    Falls back to in_domain if the perturbation key is missing.
     """
     clean = (
         perturbation.get(domain, {})
@@ -143,24 +138,6 @@ def _pert_metric(perturbation: dict, domain: str, ptype: str, level: str,
         .get("metrics", {})
         .get(metric, 0)
     )
-
-
-def load_results(results_dir: str) -> dict:
-    """
-    Load complete_evaluation.json from results_dir.
-
-    cross_domain keys are stored as "Source->Target" strings by save_results()
-    in evaluation_engine.py.  All lookup functions in this module use that same
-    format, so no key transformation is needed here.
-    """
-    file_path = os.path.join(results_dir, "complete_evaluation.json")
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Could not find evaluation file at: {file_path}")
-
-    with open(file_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    return data
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -428,7 +405,6 @@ def _print_perturbation(perturbation: dict, in_domain: dict) -> None:
     print(f"\n  Perturbation — All Metrics per Domain:\n")
     metric_cols = ["accuracy", "macro_f1", "macro_precision", "macro_recall"]
     for dom in DOMAINS:
-        clean_mets = in_domain.get(dom, {}).get("metrics", {})
         print(f"  [{dom}]")
         for ptype in PERTURB_TYPES:
             print(f"    {PERTURB_TYPE_LABELS[ptype]}")
@@ -438,7 +414,12 @@ def _print_perturbation(perturbation: dict, in_domain: dict) -> None:
             print()
             for lvl in PERTURB_SEQUENCE:
                 if lvl == "clean":
-                    mets = clean_mets
+                    # Use the subset clean (same samples as low/medium/high)
+                    mets = (
+                        perturbation.get(dom, {})
+                        .get("clean", {})
+                        .get("metrics", {})
+                    )
                 else:
                     mets = (
                         perturbation.get(dom, {})

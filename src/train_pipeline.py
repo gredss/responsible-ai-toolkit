@@ -53,11 +53,11 @@ class TrainingPipeline:
         output_dir: str = "output",
         checkpoint_dir: str = "checkpoints",
         device: str = "auto",
-        random_seed: int = 42
+        random_seed: int = 42,
     ):
         """
         Initialize training pipeline.
-        
+
         Args:
             dataset_dir: Directory containing CSV files
             output_dir: Directory for output files
@@ -91,7 +91,7 @@ class TrainingPipeline:
                 dataset_dir=self.dataset_dir,
                 tokenizer_name=config.model.DEFAULT_MODEL,
                 max_length=config.model.MAX_SEQUENCE_LENGTH,
-                random_seed=self.random_seed
+                random_seed=self.random_seed,
             )
             
             summary = data_manager.get_summary()
@@ -107,6 +107,7 @@ class TrainingPipeline:
             # evaluated on. So: if data_splits/ already exists, load it;
             # otherwise split now and save it as the canonical split.
             if os.path.exists(splits_dir):
+                data_manager.check_splits_preprocess(splits_dir)
                 logger.info(
                     f"Reusing existing data splits from {splits_dir} "
                     "(no re-splitting)."
@@ -547,7 +548,7 @@ def main():
             output_dir=args.output_dir,
             checkpoint_dir=args.checkpoint_dir,
             device=args.device,
-            random_seed=args.seed
+            random_seed=args.seed,
         )
         
         models = [args.model] if args.model != 'all' else ['base', 'large', 'lite']

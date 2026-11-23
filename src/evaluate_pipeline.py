@@ -68,6 +68,7 @@ class EvaluationPipeline:
         device: str = "auto",
         random_seed: int = 42,
         thesaurus_path: Optional[str] = None,
+        perturbation_output_dir: str = "/content/drive/MyDrive/thesis/results",
     ):
         """
         Initialize evaluation pipeline.
@@ -81,7 +82,10 @@ class EvaluationPipeline:
             random_seed: Random seed for reproducibility
             thesaurus_path: Path to the Indonesian thesaurus dict.json.
                 Defaults to <dataset_dir>/data/dict.json (the copy committed in the repo).
+            perturbation_output_dir: Root for perturbed CSVs; each model writes
+                to <root>/<model_name>.
         """
+        self.perturbation_output_dir_root = perturbation_output_dir
         self.checkpoint_dir = checkpoint_dir
         self.dataset_dir = dataset_dir
         self.output_dir = output_dir
@@ -119,7 +123,7 @@ class EvaluationPipeline:
                 dataset_dir=self.dataset_dir,
                 tokenizer_name=config.model.DEFAULT_MODEL,
                 max_length=config.model.MAX_SEQUENCE_LENGTH,
-                random_seed=self.random_seed
+                random_seed=self.random_seed,
             )
 
             summary = data_manager.get_summary()
@@ -145,6 +149,7 @@ class EvaluationPipeline:
                     "every model you evaluate."
                 )
 
+            data_manager.check_splits_preprocess(splits_dir)
             logger.info(f"Loading the shared test split from {splits_dir}")
             domain_splits = data_manager.load_domain_splits(splits_dir)
 
@@ -259,7 +264,7 @@ class EvaluationPipeline:
 
         model_output_dir = os.path.join(self.output_dir, model_name)
         perturbation_output_dir = os.path.join(
-            "/content/drive/MyDrive/thesis/results",
+            self.perturbation_output_dir_root,
             model_name
         )
 
@@ -295,101 +300,135 @@ class EvaluationPipeline:
         except Exception as e:
             logger.warning(f"Error analysis failed (non-fatal): {e}")
 
+        # Run pattern-based robustness analysis on the synonym-perturbation CSVs
+        # that were just written to perturbation_output_dir. We reuse the
+        # already-loaded specialist trainers (no checkpoint reload, no training).
+        # This step is skipped when perturbation testing was skipped, because it
+        # needs the per-level perturbed CSVs.
+        if not skip_perturbation:
+            logger.info(f"\n[STEP 3c] Pattern Analysis for {model_name.upper()}")
+            try:
+                self.run_pattern_analysis_for_model(
+                    model_name=model_name,
+                    domain_trainers=domain_trainers,
+                    perturbation_results_root=perturbation_output_dir,
+                    test_data_by_domain=test_data_by_domain,
+                )
+            except Exception as e:
+                logger.warning(f"Pattern analysis failed (non-fatal): {e}")
+
         total_time = total_timer.stop()
         logger.info(f"Evaluation completed in {total_time:.2f}s ({total_time/60:.2f} minutes)")
 
         return results
+
+    def run_pattern_analysis_for_model(
+        self,
+        model_name: str,
+        domain_trainers: Dict[str, ModelTrainer],
+        perturbation_results_root: str,
+        test_data_by_domain: Optional[Dict[str, pd.DataFrame]] = None,
+    ) -> None:
+        """
+        Run the SUCCESS-BASED pattern robustness analysis for one model.
+
+        This reads the per-domain Low/Medium/High *semantic* (synonym)
+        perturbation CSVs that ``EvaluationEngine.generate_all_perturbations``
+        wrote under ``perturbation_results_root``. It then:
+
+          * Report A - reports per-level perturbation validity (success/fail
+            counts and rates), keeping failures visible; and
+          * Report B - aligns ONLY the samples successfully perturbed at all
+            three levels (by the standardized common-id method), classifies the
+            five text-equality patterns, and scores the model on each pattern.
+
+        When ``test_data_by_domain`` is provided the original (unperturbed)
+        headlines of every matched id are also scored so Report B shows clean
+        alongside low/medium/high — a true apple-to-apple comparison.
+
+        The model is NOT retrained and NOT reloaded: we build a predict function
+        that reuses the specialist ``ModelTrainer`` already loaded for each
+        domain. The two reports are printed to the log/notebook; the returned
+        DataFrames are available if a caller wants to persist them.
+        """
+        # Imported here (not at module top) so the rest of the evaluation
+        # pipeline does not depend on this analysis module being importable.
+        import pattern_analysis
+
+        # Build a factory: given a domain, return a predict function that uses
+        # that domain's already-loaded specialist trainer.
+        def predict_fn_factory_for_domain(domain: str):
+            trainer_for_domain = domain_trainers[domain]
+
+            def predict_texts(texts: List[str]) -> List[int]:
+                if len(texts) == 0:
+                    return []
+                # predict() already returns a 1-D array of label ints.
+                predicted_labels, _probabilities = trainer_for_domain.predict(texts)
+                return [int(label) for label in predicted_labels]
+
+            return predict_texts
+
+        # Only analyse domains whose specialist checkpoint was actually loaded.
+        domains_to_analyse = list(domain_trainers.keys())
+
+        # Save the three result tables so the notebook can simply read+plot them.
+        pattern_analysis_output_dir = os.path.join(
+            perturbation_results_root, "pattern_analysis"
+        )
+
+        pattern_analysis.run_success_based_pattern_analysis(
+            results_root=perturbation_results_root,
+            predict_fn_factory=predict_fn_factory_for_domain,
+            domains=domains_to_analyse,
+            ptype="semantic",
+            print_reports=True,
+            output_dir=pattern_analysis_output_dir,
+            test_data_by_domain=test_data_by_domain,
+        )
+        logger.info(
+            f"Success-based pattern analysis for {model_name.upper()} complete "
+            f"(source CSVs under {perturbation_results_root}; "
+            f"tables saved to {pattern_analysis_output_dir})"
+        )
 
     def perform_statistical_analysis(
         self,
         all_results: Dict[str, Dict[str, Any]]
     ) -> Dict[str, Any]:
         """
-        Perform statistical analysis comparing model variants using F1-score
-        sequences drawn from every (domain × perturbation_level) condition.
+        Run the Bayesian hierarchical statistical analysis.
 
-        Each observation is the F1-score of one experimental condition, which is
-        the correct unit for a Bayesian signed-rank / paired-test comparison —
-        not raw prediction probabilities, which would conflate calibration with
-        discriminative performance and make the statistical conclusion meaningless.
+        Assembles up to 300 aggregate F1 observations
+        (3 models × 5 source domains × 5 target domains × 4 perturbation
+        conditions) from the nested evaluation result dict, then fits a
+        Beta regression with logit link using PyMC.
 
-        Score vector construction per model (up to 5 domains × 4 conditions = 20 points):
-          - in-domain clean           : 5 F1 scores  (one per domain)
-          - perturbation low/med/high : 5×3 = 15 F1 scores
-        Total N = 20 per model (or fewer if perturbation was skipped).
+        Returns the full analysis dict produced by
+        StatisticalAnalyzer.run_full_analysis(), including:
+          - observation_report   : data-quality summary
+          - convergence          : R-hat, ESS, divergences
+          - ppc                  : posterior predictive check
+          - loo                  : PSIS-LOO cross-validation
+          - contrasts            : posterior contrasts for all 5 RQs
+          - descriptive          : degradation and domain-shift summaries
+          - report_path          : path to the saved text report
+
+        If fewer than 2 model variants are present the analysis is skipped.
+        If PyMC is not installed only descriptive statistics are returned.
         """
-        logger.info("\n[STEP 4] Statistical Analysis (F1 per condition)")
+        logger.info("\n[STEP 4] Statistical Analysis — Bayesian Hierarchical Model")
 
-        if len(all_results) < 2:
-            logger.info("Skipping statistical analysis (need at least 2 models)")
-            return {'status': 'skipped', 'reason': 'insufficient_models'}
+        if len(all_results) < 1:
+            logger.info("Skipping statistical analysis (no model results).")
+            return {'status': 'skipped', 'reason': 'no_results'}
 
-        with Timer() as timer:
-            analyzer = StatisticalAnalyzer()
+        analyzer = StatisticalAnalyzer(
+            random_seed=self.random_seed,
+            output_dir=os.path.join(self.output_dir, 'statistical_analysis'),
+        )
 
-            # Build one F1 sequence per model over all (domain × condition) pairs
-            model_f1_sequences: Dict[str, np.ndarray] = {}
-
-            for model_name, results in all_results.items():
-                f1_scores: List[float] = []
-
-                # 1. In-domain F1 — one observation per specialist domain
-                for domain, domain_results in results.get('in_domain', {}).items():
-                    f1_scores.append(float(domain_results['metrics']['macro_f1']))
-
-                # 2. Perturbation F1 — one observation per (domain × level)
-                for domain, levels in results.get('perturbation', {}).items():
-                    for level in ['low', 'medium', 'high']:
-                        if level in levels:
-                            f1_scores.append(float(levels[level]['metrics']['macro_f1']))
-
-                model_f1_sequences[model_name] = np.array(f1_scores)
-                logger.info(
-                    f"  {model_name}: {len(f1_scores)} F1 observations "
-                    f"(mean={np.mean(f1_scores):.4f})"
-                )
-
-            # Pairwise Bayesian comparisons
-            model_names = list(model_f1_sequences.keys())
-            comparisons: Dict[str, Any] = {}
-
-            for i in range(len(model_names)):
-                for j in range(i + 1, len(model_names)):
-                    model_a, model_b = model_names[i], model_names[j]
-                    scores_a = model_f1_sequences[model_a]
-                    scores_b = model_f1_sequences[model_b]
-
-                    # Align lengths (take the shorter) in case perturbation was
-                    # skipped for one model but not the other
-                    n = min(len(scores_a), len(scores_b))
-                    if len(scores_a) != len(scores_b):
-                        logger.warning(
-                            f"Score-vector length mismatch: {model_a}={len(scores_a)}, "
-                            f"{model_b}={len(scores_b)}. Truncating to {n}."
-                        )
-                    scores_a, scores_b = scores_a[:n], scores_b[:n]
-
-                    logger.info(
-                        f"  Comparing {model_a} vs {model_b} "
-                        f"(N={n} F1 conditions)"
-                    )
-
-                    comparison = analyzer.analyze_model_comparison(
-                        model_a_scores=scores_a,
-                        model_b_scores=scores_b,
-                        model_a_name=model_a,
-                        model_b_name=model_b
-                    )
-                    comparisons[f"{model_a}_vs_{model_b}"] = comparison
-
-        return {
-            'status': 'completed',
-            'comparisons': comparisons,
-            'score_type': 'f1_per_condition',
-            'n_conditions_per_model': {
-                name: len(seq) for name, seq in model_f1_sequences.items()
-            }
-        }
+        return analyzer.run_full_analysis(all_results)
 
     def generate_summary(
         self,
@@ -415,33 +454,73 @@ class EvaluationPipeline:
         }
 
         for model_name, results in all_results.items():
+            # ── in-domain F1: use the subset clean from perturbation block ──
+            # results['perturbation'][domain]['clean'] is the common-subset
+            # baseline (same N as low/medium/high).  Fall back to in_domain
+            # if the perturbation block is absent.
             in_domain_f1 = []
-            for domain, metrics in results['in_domain'].items():
-                in_domain_f1.append(metrics['metrics']['macro_f1'])
+            pert_block = results.get('perturbation', {})
+            if pert_block:
+                for domain, domain_block in pert_block.items():
+                    if domain == 'clean':          # skip the top-level 'clean' key
+                        continue
+                    clean_b = domain_block.get('clean', {})
+                    if clean_b:
+                        in_domain_f1.append(
+                            float(clean_b.get('metrics', {}).get('macro_f1', 0))
+                        )
+            if not in_domain_f1:
+                # fallback: full-test-set in-domain scores
+                for domain, domain_results in results.get('in_domain', {}).items():
+                    in_domain_f1.append(
+                        float(domain_results['metrics']['macro_f1'])
+                    )
 
-            avg_in_domain_f1 = sum(in_domain_f1) / len(in_domain_f1) if in_domain_f1 else 0
+            avg_in_domain_f1 = (
+                sum(in_domain_f1) / len(in_domain_f1) if in_domain_f1 else 0.0
+            )
 
+            # ── cross-domain F1 ───────────────────────────────────────────
+            # Keys in results['cross_domain'] are "Source->Target" strings.
             cross_domain_f1 = []
-            if 'cross_domain' in results:
-                for (source, target), metrics_data in results['cross_domain'].items():
-                    if source != target:
-                        cross_domain_f1.append(metrics_data['metrics']['macro_f1'])
-            avg_cross_domain_f1 = sum(cross_domain_f1) / len(cross_domain_f1) if cross_domain_f1 else 0
+            for key, metrics_data in results.get('cross_domain', {}).items():
+                # skip in-domain diagonal (source == target)
+                if '->' in key:
+                    src, tgt = key.split('->', 1)
+                    if src.strip() == tgt.strip():
+                        continue
+                cross_domain_f1.append(
+                    float(metrics_data.get('metrics', {}).get('macro_f1', 0))
+                )
+            avg_cross_domain_f1 = (
+                sum(cross_domain_f1) / len(cross_domain_f1)
+                if cross_domain_f1 else 0.0
+            )
 
             model_summary = {
-                'avg_in_domain_f1': avg_in_domain_f1,
+                'avg_in_domain_f1':    avg_in_domain_f1,
                 'avg_cross_domain_f1': avg_cross_domain_f1,
-                'in_domain_f1_scores': in_domain_f1
+                'in_domain_f1_scores': in_domain_f1,
             }
 
-            if 'perturbation' in results and results['perturbation']:
+            # ── perturbation F1 ───────────────────────────────────────────
+            # Structure: results['perturbation'][domain]['semantic'][level]
+            if pert_block:
                 perturbation_f1 = []
-                for domain, levels in results['perturbation'].items():
+                for domain, domain_block in pert_block.items():
+                    if domain == 'clean':
+                        continue
+                    semantic = domain_block.get('semantic', {})
                     for level in ['low', 'medium', 'high']:
-                        if level in levels:
-                            perturbation_f1.append(levels[level]['metrics']['macro_f1'])
-
-                model_summary['avg_perturbation_f1'] = sum(perturbation_f1) / len(perturbation_f1) if perturbation_f1 else 0
+                        lvl = semantic.get(level, {})
+                        if lvl:
+                            perturbation_f1.append(
+                                float(lvl.get('metrics', {}).get('macro_f1', 0))
+                            )
+                model_summary['avg_perturbation_f1'] = (
+                    sum(perturbation_f1) / len(perturbation_f1)
+                    if perturbation_f1 else 0.0
+                )
 
             summary['model_summaries'][model_name] = model_summary
 
@@ -454,10 +533,19 @@ class EvaluationPipeline:
         logger.info("\nEvaluation Summary:")
         for model_name, metrics in summary['model_summaries'].items():
             logger.info(f"  {model_name.upper()}:")
-            logger.info(f"    Avg In-Domain Macro-F1: {metrics['avg_in_domain_f1']:.4f}")
-            logger.info(f"    Avg Cross-Domain Macro-F1: {metrics['avg_cross_domain_f1']:.4f}")
+            logger.info(
+                f"    Avg In-Domain Macro-F1 (subset):  "
+                f"{metrics['avg_in_domain_f1']:.4f}"
+            )
+            logger.info(
+                f"    Avg Cross-Domain Macro-F1:        "
+                f"{metrics['avg_cross_domain_f1']:.4f}"
+            )
             if 'avg_perturbation_f1' in metrics:
-                logger.info(f"    Avg Perturbation Macro-F1: {metrics['avg_perturbation_f1']:.4f}")
+                logger.info(
+                    f"    Avg Perturbation Macro-F1:        "
+                    f"{metrics['avg_perturbation_f1']:.4f}"
+                )
 
         return summary
 
@@ -558,6 +646,12 @@ def parse_arguments():
         help='Skip perturbation robustness testing (faster evaluation)'
     )
     parser.add_argument(
+        '--perturbation-output-dir', type=str,
+        default='/content/drive/MyDrive/thesis/results',
+        help='Root directory for perturbed CSVs (written to <root>/<model>). '
+             'Use a separate root per scenario to protect the baseline.'
+    )
+    parser.add_argument(
         '--seed', type=int, default=42,
         help='Random seed for reproducibility (default: 42)'
     )
@@ -594,6 +688,7 @@ def main():
             device=args.device,
             random_seed=args.seed,
             thesaurus_path=args.thesaurus_path,
+            perturbation_output_dir=args.perturbation_output_dir,
         )
 
         models = [args.model] if args.model != 'all' else ['base', 'large', 'lite']
