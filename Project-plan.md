@@ -91,7 +91,7 @@ The system follows a modular pipeline architecture with five core components:
 - Optimizer: AdamW (ε = 1e-8, weight decay = 0.01)
 - Learning rate: 2e-5 (searched over [1e-5, 2e-5, 3e-5])
 - Batch size: 32 (searched over [16, 32])
-- Epochs: 4 (early stopping patience = 2, monitored on F1)
+- Epochs: 4 (early stopping patience = 2, monitored on validation macro-F1)
 - Warmup ratio: 10%
 - Gradient clipping: max_norm = 1.0
 - Dropout: 0.1 (searched over [0.1, 0.2])
@@ -226,7 +226,7 @@ src/
 ├── train_pipeline.py        # TrainingPipeline, main()
 ├── evaluate_pipeline.py     # EvaluationPipeline, main()
 ├── utils.py                 # FileManager, Timer, safe_divide, reproducibility, …
-└── test_suite.py            # 40+ unit/integration tests (no GPU)
+└── test_suite.py            # 131 unit/integration tests (no GPU)
 ```
 
 ---

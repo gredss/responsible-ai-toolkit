@@ -187,7 +187,7 @@ streamlit run src/dashboard_app.py
 
 ### Full end-to-end notebooks (Colab)
 
-Run `run_base.ipynb`, `run_large.ipynb` and `run_lite.ipynb` with the same `RUN_NAME`, then
+Run `run_base.ipynb`, `run_large.ipynb` and `run_lite.ipynb` with the same `DRIVE_BASE`, then
 `run_bayesian_statistics.ipynb`. The Bayesian analysis compares the three models, so it needs all of them.
 
 ### Run tests (no GPU needed)

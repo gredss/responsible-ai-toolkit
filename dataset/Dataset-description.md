@@ -34,9 +34,9 @@ Each CSV file contains the following columns:
 
 ## Data Collection and Exploration
 
-Articles were collected through automated web scraping from official news sitemaps with domain-specific keyword filtering to ensure content relevance. The scraping implementation can be found in [`dataset/scrap.py`](https://github.com/gredss/domain-shift-trustworthy-ai/blob/main/dataset/scrap.py). 
+Articles were collected through automated web scraping from official news sitemaps with domain-specific keyword filtering to ensure content relevance. The scraping implementation can be found in [`dataset/scrap.py`](https://github.com/gredss/responsible-ai-toolkit/blob/main/dataset/scrap.py). 
 
-An exploratory data analysis (EDA) of the collected dataset, including source distribution, domain statistics, and data characteristics, is available in [`dataset/dataset_eda.ipynb`](https://github.com/gredss/domain-shift-trustworthy-ai/blob/main/dataset/dataset_eda.ipynb).
+An exploratory data analysis (EDA) of the collected dataset, including source distribution, domain statistics, and data characteristics, is available in [`dataset/dataset_eda.ipynb`](https://github.com/gredss/responsible-ai-toolkit/blob/main/dataset/dataset_eda.ipynb).
 
 ## Annotation Process
 
