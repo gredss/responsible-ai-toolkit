@@ -276,7 +276,7 @@ def assemble_observations(all_results: Dict[str, Dict[str, Any]]) -> pd.DataFram
         f1_match = np.allclose(
             f1_values,
             f1_values[0],
-            atol=0.0001,
+            atol=0,
             rtol=0
         )
 
