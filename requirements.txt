@@ -21,6 +21,7 @@ arviz>=0.17
 # Visualization & Dashboard
 streamlit>=1.15.0
 plotly>=5.0.0
+wordcloud>=1.9.3
 
 # Utilities
 tqdm>=4.62.0
